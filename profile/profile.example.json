@@ -1,0 +1,133 @@
+{
+  "name": "Hedi Bou Maiza",
+  "title": "Software Engineer",
+  "email": "you@example.com",
+  "phone": "+000 00 000 000",
+  "location": "Tunisia",
+  "portfolio": "https://www.hediboumaiza.engineer",
+  "github": "https://github.com/hediipor",
+  "linkedin": "https://www.linkedin.com/in/hedi-bou-maiza/",
+  "languages_spoken": ["Arabic", "English", "French", "German"],
+  "interests": ["Volunteering", "Sports", "Chess", "Painting", "Movies", "Reading"],
+  "education": [
+    {
+      "degree": "Bachelor of Technology in Computer Science and Engineering",
+      "institution": "Higher Institute of Computer Science Tunisia (ISI)",
+      "period": "2021 – 2024",
+      "gpa": "3.0"
+    },
+    {
+      "degree": "Master's in Computer Information Systems (SSII)",
+      "institution": "Higher Institute of Computer Science Tunisia (ISI)",
+      "period": "2024 – Present",
+      "gpa": null
+    },
+    {
+      "degree": "Professional Certification Courses",
+      "institution": "Université Tek-up, Tunisia",
+      "period": "2024 – Present",
+      "gpa": null
+    }
+  ],
+  "experience": [
+    {
+      "role": "Fullstack Web Development Intern",
+      "company": "Rhibi Consulting",
+      "period": "February – August 2024",
+      "location": "Online",
+      "bullets": [
+        "Designed and developed a full-stack web application to connect mentors and mentees using the MEAN stack (MongoDB, Express.js, Angular, Node.js).",
+        "Implemented user authentication, real-time messaging, and session scheduling features.",
+        "Created RESTful APIs to manage user profiles, availability, and mentorship requests.",
+        "Integrated JWT-based authentication for secure access and route protection.",
+        "Deployed the app using cloud services and followed Git-based version control and agile workflows.",
+        "Focused on clean, maintainable code and scalability to support future feature expansion."
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "Personal Portfolio Website",
+      "description": "A responsive SPA portfolio with AI chatbot, Skills Galaxy, dark/light mode.",
+      "technologies": ["React", "JavaScript", "Tailwind CSS", "Framer Motion", "Gemini AI"],
+      "highlights": [
+        "Animated UI with dark/light theme toggle and interactive skills visualization.",
+        "AI chatbot powered by Google Gemini API, deployed on Vercel with custom domain."
+      ]
+    },
+    {
+      "name": "To Do App",
+      "description": "A web application that allows users to create and manage task lists.",
+      "technologies": ["Angular", "MongoDB", "Node.js", "Express.js", "TypeScript"],
+      "highlights": ["Built with a modern full-stack JavaScript architecture."]
+    },
+    {
+      "name": "Weather Mobile App",
+      "description": "A Flutter application that allows users to check the weather.",
+      "technologies": ["Dart", "Flutter"],
+      "highlights": [
+        "Displaying hourly predictions for temperature, humidity, pressure, wind speed and sky conditions.",
+        "OpenWeather API integration."
+      ]
+    },
+    {
+      "name": "Hotel Website",
+      "description": "A website for a hotel with room booking functionality.",
+      "technologies": ["JavaScript", "HTML", "CSS", "Bootstrap", "PHP", "MySQL"],
+      "highlights": [
+        "Displaying hotel information, pictures, activities, staff and room availability.",
+        "Allows users to book rooms online."
+      ]
+    },
+    {
+      "name": "Currency Converter Mobile App",
+      "description": "A Flutter application for currency conversion from USD to TND.",
+      "technologies": ["Dart", "Flutter"],
+      "highlights": []
+    },
+    {
+      "name": "AI Taquin Game",
+      "description": "A Python AI application that displays and solves the Taquin puzzle game.",
+      "technologies": ["Python"],
+      "highlights": []
+    }
+  ],
+  "skills": {
+    "languages": ["C/C++", "Python", "JavaScript", "HTML/CSS", "Dart", "TypeScript", "PHP"],
+    "frameworks": ["Angular", "React", "Flutter", "Express.js", "Bootstrap", "Node.js"],
+    "tools": ["VS Code", "Git", "GitHub", "GitLab", "Linux"],
+    "databases": ["MongoDB", "Firebase", "MySQL"],
+    "certifications": ["RHCSA", "AWS Certified Solutions Architect", "Scrum"],
+    "coursework": [
+      "Data Structures & Algorithms",
+      "Operating Systems",
+      "CyberSecurity",
+      "Object-Oriented Programming",
+      "Database Management Systems",
+      "Software Engineering"
+    ]
+  },
+  "target_roles": [
+    "Software Engineer",
+    "Full Stack Developer",
+    "Web Developer",
+    "Frontend Developer",
+    "Backend Developer",
+    "Mobile Developer",
+    "Flutter Developer",
+    "React Developer",
+    "Angular Developer",
+    "Python Developer",
+    "Junior Developer",
+    "Software Engineering Intern",
+    "Web Development Intern"
+  ],
+  "target_locations": [
+    "Tunisia",
+    "France",
+    "Germany",
+    "Remote",
+    "United Kingdom",
+    "Canada"
+  ]
+}

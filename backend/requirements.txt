@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+beautifulsoup4
+httpx
+google-generativeai
+reportlab
+apscheduler
+sqlalchemy
+pydantic
+pydantic-settings
+python-multipart
+aiofiles
+python-dotenv
+lxml
+pillow
