@@ -1,6 +1,16 @@
 # JobHunter AI
 
-A personal job/internship hunting assistant. It scrapes job postings (via the
+[![Repo](https://img.shields.io/badge/GitHub-hediipor%2FJobHunter-181717?logo=github)](https://github.com/hediipor/JobHunter)
+[![Last commit](https://img.shields.io/github/last-commit/hediipor/JobHunter)](https://github.com/hediipor/JobHunter/commits/main)
+[![Backend](https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi&logoColor=white)](backend)
+[![Frontend](https://img.shields.io/badge/frontend-Next.js-000000?logo=nextdotjs&logoColor=white)](frontend)
+[![AI](https://img.shields.io/badge/AI-Gemini-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
+
+An end-to-end personal job-hunting autopilot: it scans job boards on a
+schedule, scores every posting against your profile, and — with one click —
+generates a tailored CV and cover letter and emails the application.
+
+It scrapes job postings (via the
 [JSearch](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch) API and a
 Keejob.com scraper), scores them against your profile, generates a tailored
 CV and cover letter with Google Gemini, and sends the application email —
