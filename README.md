@@ -16,6 +16,8 @@ Keejob.com scraper), scores them against your profile, generates a tailored
 CV and cover letter with Google Gemini, and sends the application email —
 all from a FastAPI backend and a Next.js dashboard.
 
+![Dashboard screenshot](docs/dashboard-screenshot.png)
+
 ## Setup
 
 ### 1. Backend
