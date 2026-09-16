@@ -7,6 +7,7 @@ import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from database import SessionLocal
+from digest import send_daily_digest
 from scan_service import scan_and_store
 from user_settings import load as load_user_settings
 
@@ -15,16 +16,25 @@ scheduler = BackgroundScheduler(timezone="UTC")
 
 
 def run_scan():
-    """Synchronous wrapper called by APScheduler."""
+    """Synchronous wrapper called by APScheduler: scan, then email the digest."""
     logger.info("⏰ Scheduled scan started")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(scan_and_store(SessionLocal))
+        new_ids = loop.run_until_complete(scan_and_store(SessionLocal))
     except Exception as exc:
         logger.error(f"❌ Scan failed: {exc}")
+        return
     finally:
         loop.close()
+
+    db = SessionLocal()
+    try:
+        send_daily_digest(db, new_ids)
+    except Exception as exc:
+        logger.error(f"❌ Digest failed: {exc}")
+    finally:
+        db.close()
 
 
 def start_scheduler():

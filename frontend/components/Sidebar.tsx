@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, Briefcase, FileCheck2, User, Settings, Zap,
+  LayoutDashboard, Briefcase, FileCheck2, User, Settings, Zap, Wand2,
 } from "lucide-react";
 import styles from "./Sidebar.module.css";
 
@@ -12,6 +12,7 @@ const NAV = [
   { href: "/applications",  icon: FileCheck2,       label: "Applications" },
   { href: "/profile",       icon: User,             label: "Profile" },
   { href: "/settings",      icon: Settings,         label: "Settings" },
+  { href: "/setup",         icon: Wand2,            label: "Setup Wizard" },
 ];
 
 export default function Sidebar() {

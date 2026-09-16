@@ -12,8 +12,23 @@ export interface Job {
   match_reasons: string[];
   status: string;
   is_applied: boolean;
+  ai_score?: number | null;
+  ai_verdict?: string;
+  sponsorship?: string;   // yes | likely | unclear | no
+  dealbreakers?: string[];
   description?: string;
 }
+
+// Gemini triage score if present, else the keyword score.
+export const effectiveScore = (j: Pick<Job, "ai_score" | "match_score">): number =>
+  j.ai_score != null ? j.ai_score : j.match_score;
+
+export const SPONSORSHIP_META: Record<string, { label: string; color: string }> = {
+  yes: { label: "Sponsors / remote-OK", color: "#10b981" },
+  likely: { label: "Sponsorship likely", color: "#f59e0b" },
+  unclear: { label: "Sponsorship unclear", color: "#94a3b8" },
+  no: { label: "No sponsorship", color: "#ef4444" },
+};
 
 export interface Application {
   id: number;
@@ -56,3 +71,21 @@ export const SOURCE_COLORS: Record<string, string> = {
   keejob: "#e85d2b",
   default: "#6366f1",
 };
+
+// JSearch stores location as "City, XX" with a 2-letter country code; Keejob
+// gives Tunisian towns with no code. Map both to a display country name.
+const COUNTRY_NAMES: Record<string, string> = {
+  FR: "France", ES: "Spain", DE: "Germany", CA: "Canada", TN: "Tunisia",
+  NL: "Netherlands", GB: "United Kingdom", IE: "Ireland", PT: "Portugal",
+  US: "United States", BE: "Belgium", CH: "Switzerland", IT: "Italy",
+  AT: "Austria", SE: "Sweden", PL: "Poland",
+};
+
+export function countryOf(job: Pick<Job, "location" | "source">): string {
+  if (job.source === "keejob") return "Tunisia";
+  const loc = (job.location || "").trim();
+  if (!loc) return "";
+  if (/^remote$/i.test(loc)) return "Remote";
+  const last = loc.split(/[,،]/).pop()!.trim();
+  return COUNTRY_NAMES[last.toUpperCase()] || last;
+}

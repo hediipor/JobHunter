@@ -28,12 +28,16 @@ DEFAULT_SEARCH_TERMS = [
 ]
 
 DEFAULT_LOCATIONS = [
-    "Tunisia",
-    "France",
-    "Germany",
-    "Remote",
-    "United Kingdom",
+    "Barcelona, Spain",
+    "Spain",
     "Canada",
+    "Netherlands",
+    "Germany",
+    "Ireland",
+    "Remote",
+    "France",
+    "Portugal",
+    "United Kingdom",
 ]
 
 
@@ -44,8 +48,8 @@ DEFAULT_LOCATIONS = [
 JSEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
 
 # Every scan costs one API request per query. The RapidAPI free tier allows
-# ~200 requests/month, so keep this low if you run on the free plan.
-MAX_JSEARCH_QUERIES_PER_SCAN = 8
+# ~200 requests/month — at 10/scan that's a 48h+ interval on the free plan.
+MAX_JSEARCH_QUERIES_PER_SCAN = 10
 
 # Seconds between sequential JSearch calls — rapid consecutive requests get
 # soft-throttled (empty results instead of 429)
@@ -57,9 +61,32 @@ _COUNTRY_CODES = {
     "france": "fr",
     "germany": "de",
     "united kingdom": "gb",
+    "uk": "gb",
     "canada": "ca",
     "united states": "us",
+    "usa": "us",
+    "spain": "es",
+    "netherlands": "nl",
+    "ireland": "ie",
+    "portugal": "pt",
+    "belgium": "be",
+    "switzerland": "ch",
+    "italy": "it",
+    "austria": "at",
+    "sweden": "se",
+    "poland": "pl",
 }
+
+
+def _country_code(location: str) -> str | None:
+    """Country code for a location string. Handles 'City, Country' by taking the
+    last comma-part, then any known country name appearing in the string."""
+    parts = [p.strip().lower() for p in location.split(",")]
+    for p in reversed(parts):
+        if p in _COUNTRY_CODES:
+            return _COUNTRY_CODES[p]
+    loc = location.lower()
+    return next((code for name, code in _COUNTRY_CODES.items() if name in loc), None)
 
 _EMPLOYMENT_TYPES = {
     "FULLTIME": "full-time",
@@ -122,7 +149,7 @@ async def scrape_jsearch(client: httpx.AsyncClient, term: str, location: str) ->
         params["query"] = f"{term} remote"
     else:
         params["query"] = f"{term} in {location}"
-        code = _COUNTRY_CODES.get(location.lower())
+        code = _country_code(location)
         if code:
             params["country"] = code
     try:
@@ -280,8 +307,14 @@ async def scrape_all(
     locs = locations or DEFAULT_LOCATIONS
     limit = max_jobs or settings.max_jobs_per_scan
 
-    # Cover every location with the top terms before burning quota on more terms
-    combos = [(t, l) for l in locs[:4] for t in terms[:2]][:MAX_JSEARCH_QUERIES_PER_SCAN]
+    # Alternate the top 2 terms across locations (Software Engineer, Full Stack
+    # Developer, Software Engineer, ...) rather than exhausting term[0] across
+    # every location before term[1] ever fires. With more locations than the
+    # query budget, term[0]-first starved term[1] out of the scan entirely —
+    # half the keyword variety, fewer unique postings, lower average score
+    # (jobs that only a second term's wording would catch never got pulled).
+    terms2 = terms[:2] or terms[:1]
+    combos = [(terms2[i % len(terms2)], l) for i, l in enumerate(locs)][:MAX_JSEARCH_QUERIES_PER_SCAN]
 
     all_jobs: List[Dict] = []
     seen_urls: set = set()

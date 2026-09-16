@@ -1,7 +1,7 @@
 "use client";
-import { Job, SOURCE_COLORS } from "@/lib/types";
+import { Job, SOURCE_COLORS, SPONSORSHIP_META, effectiveScore } from "@/lib/types";
 import Link from "next/link";
-import { MapPin, ExternalLink, Building2 } from "lucide-react";
+import { MapPin, ExternalLink, Building2, AlertTriangle } from "lucide-react";
 
 function ScoreRing({ score }: { score: number }) {
   const r = 22, stroke = 3;
@@ -30,13 +30,15 @@ interface Props { job: Job; onApply?: (job: Job) => void; }
 
 export default function JobCard({ job, onApply }: Props) {
   const sourceColor = SOURCE_COLORS[job.source] || SOURCE_COLORS.default;
+  const sponsor = job.sponsorship ? SPONSORSHIP_META[job.sponsorship] : undefined;
+  const dealbreakers = job.dealbreakers ?? [];
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Header row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Link href={`/jobs/${job.id}`} style={{ textDecoration: "none" }}>
+          <Link href={`/jobs/detail?id=${job.id}`} style={{ textDecoration: "none" }}>
             <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", marginBottom: 4,
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {job.title}
@@ -47,7 +49,7 @@ export default function JobCard({ job, onApply }: Props) {
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{job.company}</span>
           </div>
         </div>
-        <ScoreRing score={Math.round(job.match_score)} />
+        <ScoreRing score={Math.round(effectiveScore(job))} />
       </div>
 
       {/* Meta */}
@@ -63,29 +65,54 @@ export default function JobCard({ job, onApply }: Props) {
         {job.job_type && (
           <span className="badge badge-source" style={{ textTransform: "capitalize" }}>{job.job_type}</span>
         )}
+        {sponsor && (
+          <span className="badge badge-source" style={{ borderColor: sponsor.color + "55", color: sponsor.color }}>
+            {sponsor.label}
+          </span>
+        )}
         {job.is_applied && <span className="badge badge-applied">✓ Applied</span>}
       </div>
 
-      {/* Reasons */}
-      {job.match_reasons?.length > 0 && (
+      {/* AI verdict, else keyword reason */}
+      {job.ai_verdict ? (
+        <p style={{ fontSize: 12.5, color: "var(--text2)", lineHeight: 1.5,
+          overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" as any }}>
+          <span style={{ color: "var(--accent2)", fontWeight: 600 }}>AI:</span> {job.ai_verdict}
+        </p>
+      ) : job.match_reasons?.length > 0 && (
         <p style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.5,
           overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as any }}>
           {job.match_reasons[0]}
         </p>
       )}
 
+      {/* Dealbreakers */}
+      {dealbreakers.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {dealbreakers.slice(0, 3).map((d, i) => (
+            <span key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12, color: "var(--red)" }}>
+              <AlertTriangle size={12} style={{ marginTop: 2, flexShrink: 0 }} /> {d}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Actions */}
       <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
-        <Link href={`/jobs/${job.id}`} className="btn btn-ghost btn-sm" style={{ flex: 1, justifyContent: "center" }}>
+        <Link href={`/jobs/detail?id=${job.id}`} className="btn btn-ghost btn-sm" style={{ flex: 1, justifyContent: "center" }}>
           Details
         </Link>
         <a href={job.url} target="_blank" rel="noopener noreferrer"
           className="btn btn-ghost btn-sm" title="Open job posting">
           <ExternalLink size={14} />
         </a>
-        {!job.is_applied && onApply && (
-          <button onClick={() => onApply(job)} className="btn btn-primary btn-sm">
-            Apply
+        {onApply && (
+          <button
+            onClick={() => onApply(job)}
+            className={job.is_applied ? "btn btn-ghost btn-sm" : "btn btn-primary btn-sm"}
+            title={job.is_applied ? "Undo — mark as not applied" : "Mark as applied (you applied outside the app)"}
+          >
+            {job.is_applied ? "Applied ✓" : "Mark Applied"}
           </button>
         )}
       </div>

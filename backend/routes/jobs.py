@@ -10,8 +10,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from config import settings
-from database import Application, Job, get_db
+from database import Application, Job, fresh_jobs, get_db
 from ai_generator import generate_cv_data, generate_cover_letter, generate_email
 from pdf_builder import build_cv_pdf, build_cover_letter_pdf
 
@@ -34,6 +36,10 @@ class JobOut(BaseModel):
     match_reasons: List[str]
     status: str
     is_applied: bool
+    ai_score: Optional[float] = None
+    ai_verdict: str = ""
+    sponsorship: str = ""
+    dealbreakers: List[str] = []
 
     class Config:
         from_attributes = True
@@ -43,12 +49,15 @@ class JobDetail(JobOut):
     description: str
 
 
-def _job_out(j: Job) -> dict:
-    reasons = []
+def _json_list(raw: str) -> list:
     try:
-        reasons = json.loads(j.match_reasons or "[]")
+        v = json.loads(raw or "[]")
+        return v if isinstance(v, list) else []
     except Exception:
-        pass
+        return []
+
+
+def _job_out(j: Job) -> dict:
     return {
         "id": j.id,
         "title": j.title or "",
@@ -60,9 +69,13 @@ def _job_out(j: Job) -> dict:
         "date_posted": j.date_posted or "",
         "salary": j.salary or "",
         "match_score": j.match_score or 0.0,
-        "match_reasons": reasons,
+        "match_reasons": _json_list(j.match_reasons),
         "status": j.status or "new",
         "is_applied": j.is_applied or False,
+        "ai_score": j.ai_score,
+        "ai_verdict": j.ai_verdict or "",
+        "sponsorship": j.sponsorship or "",
+        "dealbreakers": _json_list(j.dealbreakers),
         "description": j.description or "",
     }
 
@@ -75,24 +88,31 @@ def list_jobs(
     status: Optional[str] = None,
     min_score: float = 0,
     location: Optional[str] = None,
+    sponsorship: Optional[str] = None,
+    include_stale: bool = False,
     db: Session = Depends(get_db),
 ):
-    q = db.query(Job)
+    # rank by the Gemini fit score when we have one, else the keyword score
+    effective = func.coalesce(Job.ai_score, Job.match_score)
+    q = db.query(Job) if include_stale else fresh_jobs(db)
     if source:
         q = q.filter(Job.source == source)
     if status:
         q = q.filter(Job.status == status)
     if min_score:
-        q = q.filter(Job.match_score >= min_score)
+        q = q.filter(effective >= min_score)
     if location:
         q = q.filter(Job.location.ilike(f"%{location}%"))
-    jobs = q.order_by(Job.match_score.desc()).all()
+    if sponsorship:
+        wanted = [s.strip() for s in sponsorship.split(",") if s.strip()]
+        q = q.filter(Job.sponsorship.in_(wanted))
+    jobs = q.order_by(effective.desc()).all()
     return [_job_out(j) for j in jobs]
 
 
 # ── GET /jobs/{id} ────────────────────────────────────────────────────────────
 
-@router.get("/{job_id}", response_model=JobDetail)
+@router.get("/{job_id:int}", response_model=JobDetail)
 def get_job(job_id: int, db: Session = Depends(get_db)):
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
@@ -105,7 +125,7 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
 class StatusUpdate(BaseModel):
     status: str
 
-@router.patch("/{job_id}/status")
+@router.patch("/{job_id:int}/status")
 def update_status(job_id: int, body: StatusUpdate, db: Session = Depends(get_db)):
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
@@ -113,6 +133,90 @@ def update_status(job_id: int, body: StatusUpdate, db: Session = Depends(get_db)
     j.status = body.status
     db.commit()
     return {"ok": True}
+
+
+# ── POST /jobs/{id}/mark-applied ──────────────────────────────────────────────
+
+@router.post("/{job_id:int}/mark-applied")
+def mark_applied(job_id: int, db: Session = Depends(get_db)):
+    """Toggle is_applied for jobs applied to outside the app (most of them, in
+    practice). Also gets it into the Applications tracker like the automated
+    /apply flow does, so response status (interview/offer/...) can be logged
+    the same way — minus a generated CV, since none was made for this job."""
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+
+    j.is_applied = not j.is_applied
+    if j.is_applied:
+        j.status = "applied"
+        if not db.query(Application).filter(Application.job_id == job_id).first():
+            db.add(Application(job_id=job_id, response_status="pending"))
+    elif j.status == "applied":
+        j.status = "new"
+
+    db.commit()
+    return _job_out(j)
+
+
+# ── POST /jobs/{id}/triage ────────────────────────────────────────────────────
+
+@router.post("/{job_id:int}/triage")
+def triage_one(job_id: int, db: Session = Depends(get_db)):
+    """Run (or re-run) the Gemini fit + sponsorship check on a single job."""
+    from scan_service import _apply_triage
+    from ai_generator import triage_job
+
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    with open(settings.profile_path, encoding="utf-8") as f:
+        profile = json.load(f)
+
+    result = asyncio.run(triage_job(profile, _job_out(j)))
+    if not _apply_triage(j, result):
+        raise HTTPException(502, "Gemini returned nothing — check the GEMINI_API_KEY.")
+    db.commit()
+    return _job_out(j)
+
+
+# ── POST /jobs/triage-pending ─────────────────────────────────────────────────
+
+def _triage_pending(session_factory, limit: int):
+    """Background task: triage fresh jobs that were never assessed."""
+    import asyncio as _a
+    from database import fresh_jobs
+    from scan_service import triage_jobs
+
+    db = session_factory()
+    try:
+        with open(settings.profile_path, encoding="utf-8") as f:
+            profile = json.load(f)
+        pending = (
+            fresh_jobs(db)
+            .filter(Job.ai_assessed_at.is_(None))
+            .order_by(func.coalesce(Job.ai_score, Job.match_score).desc())
+            .limit(limit)
+            .all()
+        )
+        _a.run(triage_jobs(db, pending, profile))
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/triage-pending")
+def triage_pending(background_tasks: BackgroundTasks, limit: int = 25, db: Session = Depends(get_db)):
+    """Kick off Gemini triage for fresh jobs that haven't been assessed yet.
+    Rate-limited (~13s/job) for the free tier, so it runs in the background."""
+    from database import SessionLocal, fresh_jobs
+
+    n = fresh_jobs(db).filter(Job.ai_assessed_at.is_(None)).count()
+    if not n:
+        return {"message": "All fresh jobs already assessed."}
+    take = min(n, limit)
+    background_tasks.add_task(_triage_pending, SessionLocal, limit)
+    return {"message": f"Assessing {take} of {n} pending job(s) — ~{round(take * 13 / 60)} min. Refresh to see results."}
 
 
 # ── POST /jobs/scan ───────────────────────────────────────────────────────────
@@ -126,13 +230,26 @@ def _do_scan(db_session_factory):
 @router.post("/scan")
 def trigger_scan(background_tasks: BackgroundTasks):
     from database import SessionLocal
+    from scan_service import get_scan_state
+
+    if get_scan_state()["running"]:
+        return {"message": "A scan is already running"}
     background_tasks.add_task(_do_scan, SessionLocal)
     return {"message": "Scan started in background"}
 
 
+@router.get("/scan-status")
+def scan_status():
+    """Poll this while a scan is running — scrape + triage can take minutes,
+    way past any fixed-timeout guess, so the frontend polls instead of waiting
+    a fixed number of seconds and hoping it's done."""
+    from scan_service import get_scan_state
+    return get_scan_state()
+
+
 # ── POST /jobs/{id}/generate ──────────────────────────────────────────────────
 
-@router.post("/{job_id}/generate")
+@router.post("/{job_id:int}/generate")
 def generate_documents(job_id: int, db: Session = Depends(get_db)):
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
@@ -183,7 +300,7 @@ def generate_documents(job_id: int, db: Session = Depends(get_db)):
 class ApplyRequest(BaseModel):
     to_email: str
 
-@router.post("/{job_id}/apply")
+@router.post("/{job_id:int}/apply")
 def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db)):
     import datetime
     from email_sender import send_application
