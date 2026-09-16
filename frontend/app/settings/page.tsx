@@ -111,7 +111,7 @@ export default function SettingsPage() {
               <input type="number" min={1} max={168} className="input" value={interval}
                 onChange={e => setIntervalHours(e.target.value)} />
               <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 6 }}>
-                Each scan uses up to 8 JSearch API requests (free tier: 200/month). 24h is a safe default.
+                Each scan uses up to 10 JSearch API requests (free tier: 200/month) — use a 48h+ interval on the free plan.
               </p>
             </div>
             <div>
@@ -133,6 +133,12 @@ export default function SettingsPage() {
           <KeyStatus label="Gemini API key" ok={!!cfg?.keys.gemini} />
           <KeyStatus label="RapidAPI key (JSearch)" ok={!!cfg?.keys.rapidapi} />
           <KeyStatus label={`Gmail app password (${cfg?.gmail_from || "not set"})`} ok={!!cfg?.keys.gmail} />
+          <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 10 }}>
+            Gemini also powers the per-job AI check (fit score, visa sponsorship, dealbreakers)
+            and the daily digest email. On the free tier it's rate-limited to ~5 calls/min, so
+            each scan assesses its 10 strongest new jobs and the rest can be filled in from the
+            dashboard.
+          </p>
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 12 }}>
             Keys are stored in the backend <code style={{ background: "var(--bg)", padding: "2px 6px", borderRadius: 4 }}>.env</code> file.
             Edit that file and restart the backend to change them.
@@ -146,7 +152,7 @@ export default function SettingsPage() {
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>Search Terms</h3>
           </div>
           <p style={{ fontSize: 13, color: "var(--text2)", marginBottom: 10 }}>
-            One per line. The first 2 terms are combined with the first 4 locations for JSearch queries.
+            One per line. The first term is queried across every location; the second term fills any remaining request budget.
           </p>
           <textarea className="input" value={terms} onChange={e => setTerms(e.target.value)}
             spellCheck={false}
@@ -160,7 +166,7 @@ export default function SettingsPage() {
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>Locations</h3>
           </div>
           <p style={{ fontSize: 13, color: "var(--text2)", marginBottom: 10 }}>
-            One per line. Use country names or “Remote”. Keejob always covers Tunisia separately.
+            One per line. Country name, “City, Country”, or “Remote”. First {10} are queried per scan. Keejob covers Tunisia separately.
           </p>
           <textarea className="input" value={locations} onChange={e => setLocations(e.target.value)}
             spellCheck={false}

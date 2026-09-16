@@ -51,7 +51,7 @@ def list_applications(db: Session = Depends(get_db)):
     return [_app_out(a, db) for a in apps]
 
 
-@router.get("/{app_id}", response_model=AppOut)
+@router.get("/{app_id:int}", response_model=AppOut)
 def get_application(app_id: int, db: Session = Depends(get_db)):
     a = db.query(Application).filter(Application.id == app_id).first()
     if not a:
@@ -64,7 +64,7 @@ class StatusUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-@router.patch("/{app_id}/status")
+@router.patch("/{app_id:int}/status")
 def update_response_status(app_id: int, body: StatusUpdate, db: Session = Depends(get_db)):
     a = db.query(Application).filter(Application.id == app_id).first()
     if not a:
@@ -80,7 +80,7 @@ def update_response_status(app_id: int, body: StatusUpdate, db: Session = Depend
     return {"ok": True}
 
 
-@router.delete("/{app_id}")
+@router.delete("/{app_id:int}")
 def delete_application(app_id: int, db: Session = Depends(get_db)):
     a = db.query(Application).filter(Application.id == app_id).first()
     if not a:

@@ -1,18 +1,23 @@
 """
 /stats endpoint — dashboard analytics
 """
-from fastapi import APIRouter, Depends
+import datetime
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database import Application, Job, get_db
+from database import Application, Job, fresh_jobs, get_db
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
 
 @router.get("/")
 def get_stats(db: Session = Depends(get_db)):
-    total_jobs = db.query(func.count(Job.id)).scalar() or 0
+    # Dashboard reflects the current (fresh) board; applied/interviews/offers
+    # stay global since they track history.
+    fresh = fresh_jobs(db).subquery()
+    total_jobs = db.query(func.count(fresh.c.id)).scalar() or 0
     applied = db.query(func.count(Job.id)).filter(Job.is_applied == True).scalar() or 0
     interviews = db.query(func.count(Application.id)).filter(
         Application.response_status == "interview"
@@ -20,19 +25,19 @@ def get_stats(db: Session = Depends(get_db)):
     offers = db.query(func.count(Application.id)).filter(
         Application.response_status == "offer"
     ).scalar() or 0
-    avg_score = db.query(func.avg(Job.match_score)).scalar() or 0
+    avg_score = db.query(func.avg(fresh.c.match_score)).scalar() or 0
 
     # Jobs by source
     sources_raw = (
-        db.query(Job.source, func.count(Job.id))
-        .group_by(Job.source)
+        db.query(fresh.c.source, func.count(fresh.c.id))
+        .group_by(fresh.c.source)
         .all()
     )
     sources = {s: c for s, c in sources_raw}
 
     # Score distribution buckets
     buckets = {"90-100": 0, "70-89": 0, "50-69": 0, "0-49": 0}
-    for (score,) in db.query(Job.match_score).all():
+    for (score,) in db.query(fresh.c.match_score).all():
         s = score or 0
         if s >= 90:
             buckets["90-100"] += 1
@@ -45,7 +50,7 @@ def get_stats(db: Session = Depends(get_db)):
 
     # Recent jobs (top 5 by score)
     recent = (
-        db.query(Job)
+        fresh_jobs(db)
         .order_by(Job.match_score.desc())
         .limit(5)
         .all()
@@ -64,3 +69,15 @@ def get_stats(db: Session = Depends(get_db)):
             for j in recent
         ],
     }
+
+
+@router.post("/digest")
+def send_digest_now(db: Session = Depends(get_db)):
+    """Email the daily digest on demand — covers jobs added in the last 26h."""
+    from digest import send_daily_digest
+
+    since = datetime.datetime.utcnow() - datetime.timedelta(hours=26)
+    ids = [i for (i,) in db.query(Job.id).filter(Job.created_at >= since).all()]
+    if not send_daily_digest(db, ids):
+        raise HTTPException(400, "Nothing to send (no recent jobs, or Gmail/digest disabled).")
+    return {"message": f"Digest sent — {len(ids)} recent job(s)."}

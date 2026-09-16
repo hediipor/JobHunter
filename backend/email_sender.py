@@ -17,6 +17,26 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 
 
+def _send(msg: MIMEMultipart, to_email: str) -> None:
+    context = ssl.create_default_context()
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.ehlo()
+        server.starttls(context=context)
+        server.login(settings.gmail_from, settings.gmail_app_password)
+        server.sendmail(settings.gmail_from, to_email, msg.as_string())
+
+
+def send_digest(to_email: str, subject: str, html: str) -> bool:
+    """Send the daily job digest as an HTML email."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = settings.gmail_from
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    _send(msg, to_email)
+    return True
+
+
 def send_application(
     to_email: str,
     subject: str,
@@ -46,11 +66,5 @@ def send_application(
             part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
             msg.attach(part)
 
-    context = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls(context=context)
-        server.login(settings.gmail_from, settings.gmail_app_password)
-        server.sendmail(settings.gmail_from, to_email, msg.as_string())
-
+    _send(msg, to_email)
     return True

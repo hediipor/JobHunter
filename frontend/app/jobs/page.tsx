@@ -1,31 +1,50 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import api from "@/lib/api";
-import { Job } from "@/lib/types";
+import { Job, countryOf } from "@/lib/types";
 import JobCard from "@/components/JobCard";
 import { Search, SlidersHorizontal } from "lucide-react";
+import toast from "react-hot-toast";
 
 export default function JobsPage() {
+  const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
   const [minScore, setMinScore] = useState(0);
   const [jobType, setJobType] = useState("");
+  const [country, setCountry] = useState("");
+  const [sponsorship, setSponsorship] = useState("");
 
   const params = new URLSearchParams();
   if (source) params.set("source", source);
   if (minScore) params.set("min_score", String(minScore));
+  if (sponsorship) params.set("sponsorship", sponsorship);
 
   const { data: jobs = [], isLoading } = useQuery<Job[]>({
-    queryKey: ["jobs", source, minScore],
+    queryKey: ["jobs", source, minScore, sponsorship],
     queryFn: () => api.get(`/jobs/?${params}`),
   });
+
+  const markAppliedMutation = useMutation({
+    mutationFn: (jobId: number) => api.post(`/jobs/${jobId}/mark-applied`),
+    onSuccess: (updated: Job) => {
+      toast.success(updated.is_applied ? "Marked as applied" : "Unmarked");
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
+      qc.invalidateQueries({ queryKey: ["applications"] });
+    },
+    onError: () => toast.error("Couldn't update — is the backend running?"),
+  });
+
+  const countries = Array.from(new Set(jobs.map(countryOf).filter(Boolean))).sort();
 
   const filtered = jobs.filter(j => {
     const q = search.toLowerCase();
     const matchSearch = !q || j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q) || j.location.toLowerCase().includes(q);
     const matchType = !jobType || (j.job_type || "").toLowerCase().includes(jobType);
-    return matchSearch && matchType;
+    const matchCountry = !country || countryOf(j) === country;
+    return matchSearch && matchType && matchCountry;
   });
 
   return (
@@ -55,6 +74,10 @@ export default function JobsPage() {
           <option value="glassdoor">Glassdoor</option>
           <option value="keejob">Keejob</option>
         </select>
+        <select className="input" style={{ flex: "0 1 150px" }} value={country} onChange={e => setCountry(e.target.value)}>
+          <option value="">All Countries</option>
+          {countries.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
         <select className="input" style={{ flex: "0 1 150px" }} value={jobType} onChange={e => setJobType(e.target.value)}>
           <option value="">All Types</option>
           <option value="internship">Internship</option>
@@ -62,11 +85,18 @@ export default function JobsPage() {
           <option value="remote">Remote</option>
           <option value="part-time">Part-time</option>
         </select>
+        <select className="input" style={{ flex: "0 1 170px" }} value={sponsorship} onChange={e => setSponsorship(e.target.value)}>
+          <option value="">Any Sponsorship</option>
+          <option value="yes,likely">Sponsors / likely</option>
+          <option value="yes">Sponsors / remote-OK</option>
+          <option value="unclear">Unclear</option>
+          <option value="no">No sponsorship</option>
+        </select>
         <select className="input" style={{ flex: "0 1 160px" }} value={minScore} onChange={e => setMinScore(Number(e.target.value))}>
-          <option value={0}>Any Match Score</option>
-          <option value={50}>≥ 50% Match</option>
-          <option value={70}>≥ 70% Match</option>
-          <option value={85}>≥ 85% Match</option>
+          <option value={0}>Any Fit Score</option>
+          <option value={50}>≥ 50% Fit</option>
+          <option value={70}>≥ 70% Fit</option>
+          <option value={85}>≥ 85% Fit</option>
         </select>
       </div>
 
@@ -78,7 +108,9 @@ export default function JobsPage() {
         </div>
       ) : (
         <div className="grid-3">
-          {filtered.map(j => <JobCard key={j.id} job={j} />)}
+          {filtered.map(j => (
+            <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)} />
+          ))}
         </div>
       )}
     </div>

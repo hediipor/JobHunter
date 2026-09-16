@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
 import { QueryProvider } from "@/components/QueryProvider";
+import SetupGate from "@/components/SetupGate";
 import { Toaster } from "react-hot-toast";
 
 export const metadata: Metadata = {
@@ -16,7 +17,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <QueryProvider>
           <div className="layout">
             <Sidebar />
-            <main className="main-content">{children}</main>
+            <main className="main-content">
+              <SetupGate>{children}</SetupGate>
+            </main>
           </div>
           <Toaster
             position="bottom-right"

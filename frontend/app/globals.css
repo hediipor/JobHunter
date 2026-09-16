@@ -125,11 +125,11 @@ body {
 .page-subtitle { font-size: 14px; color: var(--text2); margin-top: 4px; }
 
 /* ── Grid ────────────────────────────────────────────────── */
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
-.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
-@media (max-width: 1200px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 900px)  { .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+/* auto-fill + minmax: columns wrap as space shrinks instead of overflowing
+   the overflow-x:hidden main-content (which was clipping cards) */
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
 
 /* ── Inputs ──────────────────────────────────────────────── */
 .input {

@@ -73,7 +73,7 @@ export default function ApplicationsPage() {
               {/* Left Info */}
               <div style={{ flex: 1 }}>
                 <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
-                  <Link href={`/jobs/${app.job_id}`} className="hover:underline" style={{ color: "inherit", textDecoration: "none" }}>
+                  <Link href={`/jobs/detail?id=${app.job_id}`} className="hover:underline" style={{ color: "inherit", textDecoration: "none" }}>
                     {app.job_title}
                   </Link>
                 </h3>
@@ -83,9 +83,13 @@ export default function ApplicationsPage() {
                     <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--green)", fontSize: 13 }}>
                       <Mail size={13} /> Sent
                     </span>
-                  ) : (
+                  ) : app.cv_path ? (
                     <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--yellow)", fontSize: 13 }}>
                       <Mail size={13} /> Draft
+                    </span>
+                  ) : (
+                    <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text2)", fontSize: 13 }}>
+                      Applied manually
                     </span>
                   )}
                 </div>
@@ -121,10 +125,12 @@ export default function ApplicationsPage() {
 
               {/* Actions */}
               <div style={{ display: "flex", gap: 8 }}>
-                <a href={`${API_BASE}/files/CV_job_${app.job_id}.pdf`} target="_blank" title="View CV"
-                  className="btn btn-ghost btn-sm" style={{ padding: 8 }}>
-                  <ExternalLink size={16} />
-                </a>
+                {app.cv_path && (
+                  <a href={`${API_BASE}/files/CV_job_${app.job_id}.pdf`} target="_blank" title="View CV"
+                    className="btn btn-ghost btn-sm" style={{ padding: 8 }}>
+                    <ExternalLink size={16} />
+                  </a>
+                )}
                 <button 
                   className="btn btn-danger btn-sm" 
                   style={{ padding: 8 }}
