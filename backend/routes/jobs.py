@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 
+import llm
 from config import settings
 from database import Application, Job, fresh_jobs, get_db
 from ai_generator import generate_cv_data, generate_cover_letter, generate_email
@@ -180,7 +181,7 @@ def mark_applied(job_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{job_id:int}/triage")
 async def triage_one(job_id: int, db: Session = Depends(get_db)):
-    """Run (or re-run) the Gemini fit + sponsorship check on a single job."""
+    """Run (or re-run) the AI fit + sponsorship check on a single job."""
     from scan_service import _apply_triage
     from ai_generator import triage_job
 
@@ -192,9 +193,12 @@ async def triage_one(job_id: int, db: Session = Depends(get_db)):
     with open(settings.profile_path, encoding="utf-8") as f:
         profile = json.load(f)
 
-    result = await triage_job(profile, _job_out(j))
+    try:
+        result = await triage_job(profile, _job_out(j))
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
     if not _apply_triage(j, result):
-        raise HTTPException(502, "Gemini returned nothing — check the GEMINI_API_KEY.")
+        raise HTTPException(502, "The LLM returned nothing usable — check your API keys.")
     db.commit()
     return _job_out(j)
 
@@ -225,8 +229,8 @@ async def _triage_pending(session_factory, limit: int):
 
 @router.post("/triage-pending")
 async def triage_pending(limit: int = 25, db: Session = Depends(get_db)):
-    """Kick off Gemini triage for fresh jobs that haven't been assessed yet.
-    Rate-limited (~13s/job) for the free tier, so it runs in the background."""
+    """Kick off AI triage for fresh jobs that haven't been assessed yet.
+    Rate-limited per provider, so it runs in the background."""
     from database import SessionLocal, fresh_jobs
 
     n = fresh_jobs(db).filter(Job.ai_assessed_at.is_(None)).count()
@@ -234,7 +238,7 @@ async def triage_pending(limit: int = 25, db: Session = Depends(get_db)):
         return {"message": "All fresh jobs already assessed."}
     take = min(n, limit)
     _spawn(_triage_pending(SessionLocal, limit))
-    return {"message": f"Assessing {take} of {n} pending job(s) — ~{round(take * 13 / 60)} min. Refresh to see results."}
+    return {"message": f"Assessing {take} of {n} pending job(s) in the background. Refresh to see results."}
 
 
 # ── POST /jobs/scan ───────────────────────────────────────────────────────────
@@ -272,8 +276,13 @@ async def generate_documents(job_id: int, db: Session = Depends(get_db)):
 
     job_dict = _job_out(j)
 
-    cv_data = await generate_cv_data(profile, job_dict)
-    cl_text = await generate_cover_letter(profile, job_dict, cv_data)
+    try:
+        cv_data = await generate_cv_data(profile, job_dict)
+        cl_text = await generate_cover_letter(profile, job_dict, cv_data)
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except llm.LLMError as exc:
+        raise HTTPException(502, f"LLM call failed: {exc}")
     subject, body = await generate_email(profile, job_dict, cl_text)
 
     # Build PDFs — ReportLab is CPU-bound, keep it off the loop

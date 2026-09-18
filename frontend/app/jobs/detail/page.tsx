@@ -26,7 +26,7 @@ function JobDetailContent() {
       qc.invalidateQueries({ queryKey: ["job", id] });
       toast.success("📄 CV & Cover Letter generated!");
     },
-    onError: () => toast.error("Generation failed — check your Gemini API key."),
+    onError: () => toast.error("Generation failed — check your API keys or quota."),
   });
 
   const applyMutation = useMutation({
@@ -46,7 +46,7 @@ function JobDetailContent() {
       toast.success("🤖 AI assessment updated");
       qc.invalidateQueries({ queryKey: ["job", id] });
     },
-    onError: () => toast.error("Triage failed — check your Gemini API key."),
+    onError: () => toast.error("Triage failed — check your API keys or quota."),
   });
 
   const markAppliedMutation = useMutation({
@@ -150,7 +150,7 @@ function JobDetailContent() {
               </>
             ) : (
               <p style={{ fontSize: 13, color: "var(--text3)" }}>
-                Not assessed yet. Gemini checks the top matches each scan — run it manually here.
+                Not assessed yet. The AI checks the top matches each scan — run it manually here.
               </p>
             )}
           </div>

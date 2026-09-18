@@ -1,9 +1,10 @@
-"""Self-checks for the Gemini-triage plumbing and the digest renderer.
-No network: triage_job is monkeypatched."""
+"""Self-checks for the AI-triage plumbing and the digest renderer.
+No network: llm.complete / llm._post are monkeypatched."""
 import asyncio
 import json
 from types import SimpleNamespace
 
+from conftest import fake_providers, resp
 from digest import render_digest, _score, STRONG_CUTOFF
 from scan_service import _apply_triage
 
@@ -61,23 +62,31 @@ def test_render_digest_empty():
 
 
 def test_retry_after_parsing():
-    from ai_generator import _retry_after
+    from llm import _retry_after
     google_err = ('429 Quota exceeded ... retry_delay {\n  seconds: 47\n}\n')
     assert _retry_after(Exception(google_err)) == 48.0          # seconds + 1
     assert _retry_after(Exception("please retry in 5.5s")) == 6.5
     assert _retry_after(Exception("no hint")) == 20.0           # default
     assert _retry_after(Exception("retry_delay { seconds: 999 }")) == 65.0  # capped
+    assert _retry_after("", {"retry-after": "2"}) == 3.0         # Groq header
+    assert _retry_after("", {"x-ratelimit-reset-tokens": "7.66s",
+                             "x-ratelimit-reset-requests": "120ms"}) == 8.66
+
+
+def _ok_response(text):
+    return resp(200, json={"choices": [{"message": {"content": text}}]})
 
 
 def test_triage_stops_on_daily_quota(monkeypatch):
-    import ai_generator
+    import llm
     from scan_service import triage_jobs
-    monkeypatch.setattr(ai_generator.settings, "gemini_api_key", "fake")
-    monkeypatch.setattr(ai_generator, "TRIAGE_MIN_INTERVAL", 0)
+    fake_providers(monkeypatch, "gemini")
+    calls = []
 
-    def boom(_p):
-        raise Exception("429 ... quota_id: \"GenerateRequestsPerDayPerProjectPerModel-FreeTier\"")
-    monkeypatch.setattr(ai_generator, "_call", boom)
+    async def boom(p, prompt):
+        calls.append(p.name)
+        return resp(429, text='{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}')
+    monkeypatch.setattr(llm, "_post", boom)
 
     class FakeDB:
         commits = 0
@@ -85,36 +94,38 @@ def test_triage_stops_on_daily_quota(monkeypatch):
     db = FakeDB()
     asyncio.run(triage_jobs(db, [_job(id=1), _job(id=2)], {"name": "H"}))
     assert db.commits == 0  # bailed on the first job, no partial writes claimed
+    assert calls == ["gemini"]
 
 
 def test_triage_job_parse(monkeypatch):
-    import ai_generator
-    monkeypatch.setattr(ai_generator.settings, "gemini_api_key", "fake")
-    monkeypatch.setattr(ai_generator, "_call",
-                        lambda p: '```json\n{"fit_score": 55, "verdict": "ok", '
-                                  '"sponsorship": "NO", "dealbreakers": ["x", ""]}\n```')
+    import ai_generator, llm
+
+    async def fake_complete(prompt, *, tier):
+        assert tier == "fast"
+        return ('```json\n{"fit_score": 55, "verdict": "ok", '
+                '"sponsorship": "NO", "dealbreakers": ["x", ""]}\n```', "fake")
+    monkeypatch.setattr(llm, "complete", fake_complete)
     out = asyncio.run(ai_generator.triage_job({"name": "H"}, _job().__dict__))
     assert out == {"fit_score": 55.0, "verdict": "ok", "sponsorship": "no", "dealbreakers": ["x"]}
 
 
 def test_scan_and_single_triage_share_one_loop(monkeypatch, tmp_path):
     """Phase 0: a scan's triage and a single-job triage contend for the same
-    module-level asyncio.Lock. On one loop that's fine; across loops it raised
-    'bound to a different event loop'."""
-    import time
-    import ai_generator, scan_service, user_settings
+    module-level asyncio.Lock (now llm's per-provider lock). On one loop that's
+    fine; across loops it raised 'bound to a different event loop'."""
+    import llm, scan_service, user_settings
     from routes import jobs as jobs_route
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
     from database import Base, Job
 
-    monkeypatch.setattr(ai_generator.settings, "gemini_api_key", "fake")
-    monkeypatch.setattr(ai_generator, "TRIAGE_MIN_INTERVAL", 0)
-    monkeypatch.setattr(ai_generator, "_triage_lock", asyncio.Lock())
-    monkeypatch.setattr(ai_generator, "_call", lambda p: (
-        time.sleep(0.05),  # hold the lock long enough for the other side to queue
-        '{"fit_score": 50, "verdict": "ok", "sponsorship": "no", "dealbreakers": []}')[1])
+    fake_providers(monkeypatch, "groq", rpm=600)  # 0.1s spacing -> the lock is contended
+
+    async def slow_ok(p, prompt):
+        await asyncio.sleep(0.05)
+        return _ok_response('{"fit_score": 50, "verdict": "ok", "sponsorship": "no", "dealbreakers": []}')
+    monkeypatch.setattr(llm, "_post", slow_ok)
 
     profile = tmp_path / "profile.json"
     profile.write_text("{}", encoding="utf-8")

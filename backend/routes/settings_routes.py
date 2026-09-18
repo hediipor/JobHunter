@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+import llm
 import user_settings
 from config import settings
 
@@ -28,10 +29,12 @@ def get_settings() -> Dict[str, Any]:
     cfg = user_settings.load()
     cfg["keys"] = {
         "gemini": bool(settings.gemini_api_key),
+        "groq": bool(settings.groq_api_key),
         "gmail": bool(settings.gmail_app_password),
         "rapidapi": bool(settings.rapidapi_key),
     }
     cfg["gmail_from"] = settings.gmail_from
+    cfg["llm_providers"] = llm.status()
     return cfg
 
 

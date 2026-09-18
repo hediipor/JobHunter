@@ -7,7 +7,8 @@ import datetime
 import json
 import logging
 
-from ai_generator import TriageQuotaExhausted, triage_job
+import llm
+from ai_generator import triage_job
 from config import settings
 from database import Job
 from matcher import calculate_match
@@ -27,9 +28,8 @@ def get_scan_state() -> dict:
     return dict(_scan_state)
 
 
-# How many of each scan's new jobs get the Gemini triage pass — the highest
-# keyword-scored ones. Calls are rate-limited (~13s apart) for the free tier,
-# so this is also ≈ how many minutes triage adds to a scan.
+# How many of each scan's new jobs get the AI triage pass — the highest
+# keyword-scored ones. Calls are rate-limited per provider inside llm.py.
 TRIAGE_TOP_N = 10
 
 
@@ -59,9 +59,9 @@ def _apply_triage(job: Job, result: dict) -> bool:
 
 
 async def triage_jobs(db, jobs: list[Job], profile: dict) -> None:
-    """Run Gemini triage over the given Job rows, in place. Caller commits.
-    Calls are serialised + rate-limited inside triage_job for the free tier."""
-    if not (jobs and settings.gemini_api_key):
+    """Run AI triage over the given Job rows, in place. Caller commits.
+    Calls are rate-limited per provider inside llm.complete()."""
+    if not (jobs and llm.configured()):
         return
     done = 0
     try:
@@ -72,8 +72,8 @@ async def triage_jobs(db, jobs: list[Job], profile: dict) -> None:
             })):
                 done += 1
                 db.commit()  # persist as we go — a mid-batch quota stop keeps progress
-    except TriageQuotaExhausted:
-        logger.warning(f"🤖 Triaged {done}/{len(jobs)} — Gemini daily free-tier quota spent, stopping")
+    except llm.AllProvidersExhausted:
+        logger.warning(f"🤖 Triaged {done}/{len(jobs)} — every LLM provider's daily quota is spent, stopping")
         return
     logger.info(f"🤖 Triaged {done}/{len(jobs)} jobs")
 

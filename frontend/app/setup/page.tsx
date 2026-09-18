@@ -36,6 +36,7 @@ export default function SetupPage() {
   // Step 2 state
   const [showGemini, setShowGemini] = useState(false);
   const [geminiKey, setGeminiKey] = useState("");
+  const [groqKey, setGroqKey] = useState("");
   const [rapidapiKey, setRapidapiKey] = useState("");
   const [gmailFrom, setGmailFrom] = useState("");
   const [gmailPassword, setGmailPassword] = useState("");
@@ -90,6 +91,7 @@ export default function SetupPage() {
   const handleSaveKeys = () => {
     const body: Record<string, string> = {};
     if (geminiKey.trim()) body.gemini_api_key = geminiKey.trim();
+    if (groqKey.trim()) body.groq_api_key = groqKey.trim();
     if (rapidapiKey.trim()) body.rapidapi_key = rapidapiKey.trim();
     if (gmailFrom.trim()) body.gmail_from = gmailFrom.trim();
     if (gmailPassword.trim()) body.gmail_app_password = gmailPassword.trim();
@@ -193,6 +195,15 @@ export default function SetupPage() {
               Skip this and you&apos;ll still get keyword-based matching, just no AI verdicts.
             </p>
           </div>
+
+          <Field
+            label="Groq API key"
+            type="password"
+            value={groqKey}
+            onChange={e => setGroqKey(e.target.value)}
+            placeholder="gsk_..."
+            hint="Runs the high-volume job triage so Gemini's small free quota is saved for CVs and cover letters. Free at console.groq.com/keys. Either key alone works."
+          />
 
           <Field
             label="RapidAPI key (JSearch)"

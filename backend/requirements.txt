@@ -2,7 +2,6 @@ fastapi
 uvicorn[standard]
 beautifulsoup4
 httpx
-google-generativeai
 reportlab
 apscheduler
 sqlalchemy

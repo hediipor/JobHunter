@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
-import { Stats, Job } from "@/lib/types";
+import { Stats, Job, LlmProvider } from "@/lib/types";
 import StatsCard from "@/components/StatsCard";
 import JobCard from "@/components/JobCard";
 import { Briefcase, Send, MessageSquare, Gift, Star, RefreshCw, Loader2, Mail, Sparkles } from "lucide-react";
@@ -41,6 +41,14 @@ export default function Dashboard() {
   // instead of guessing with a fixed timer — that's what made "is it done yet?"
   // unclear before: the button re-enabled the instant the request was *queued*,
   // not when the scan actually finished.
+  // Shares the settings page's query — only llm_providers is read here.
+  const { data: llm } = useQuery<{ llm_providers: LlmProvider[] }>({
+    queryKey: ["settings"],
+    queryFn: () => api.get("/settings/"),
+    refetchInterval: watching ? 15000 : false,
+  });
+  const providers = (llm?.llm_providers || []).filter(p => p.configured);
+
   const { data: scanStatus } = useQuery<ScanStatus>({
     queryKey: ["scan-status"],
     queryFn: () => api.get("/jobs/scan-status"),
@@ -58,6 +66,7 @@ export default function Dashboard() {
       );
     }
     qc.invalidateQueries({ queryKey: ["stats"] });
+    qc.invalidateQueries({ queryKey: ["settings"] });
     qc.invalidateQueries({ queryKey: ["top-jobs"] });
     qc.invalidateQueries({ queryKey: ["jobs"] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -89,7 +98,7 @@ export default function Dashboard() {
   const triageMutation = useMutation({
     mutationFn: () => api.post("/jobs/triage-pending"),
     onSuccess: (d: any) => toast.success(d?.message || "🤖 Assessing jobs…", { duration: 6000 }),
-    onError: () => toast.error("Triage failed — check your Gemini API key."),
+    onError: () => toast.error("Triage failed — check your API keys or quota."),
   });
 
   const topJobsList = (topJobs || []).slice(0, 6);
@@ -138,6 +147,22 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* LLM quota — otherwise the only sign you're out is a log line */}
+      {llm && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, fontSize: 12 }}>
+          {providers.length === 0 && (
+            <span className="badge badge-score-low">No LLM key configured — AI check is off</span>
+          )}
+          {providers.map(p => (
+            <span key={p.name} title={p.model}
+              className={`badge ${p.exhausted ? "badge-score-low" : "badge-source"}`}>
+              {p.name}: {p.used_today}{p.daily_cap ? `/${p.daily_cap}` : ""} today
+              {p.exhausted && " · out of quota until 00:00 UTC"}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Stats */}
       {statsLoading ? <div className="spinner" /> : stats && (

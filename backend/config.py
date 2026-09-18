@@ -18,6 +18,9 @@ else:
 
 class Settings(BaseSettings):
     gemini_api_key: str = ""
+    groq_api_key: str = ""
+    cerebras_api_key: str = ""
+    openrouter_api_key: str = ""
     gmail_app_password: str = ""
     gmail_from: str = ""
     rapidapi_key: str = ""

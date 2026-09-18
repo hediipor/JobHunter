@@ -19,7 +19,7 @@ export interface Job {
   description?: string;
 }
 
-// Gemini triage score if present, else the keyword score.
+// AI triage score if present, else the keyword score.
 export const effectiveScore = (j: Pick<Job, "ai_score" | "match_score">): number =>
   j.ai_score != null ? j.ai_score : j.match_score;
 
@@ -29,6 +29,16 @@ export const SPONSORSHIP_META: Record<string, { label: string; color: string }> 
   unclear: { label: "Sponsorship unclear", color: "#94a3b8" },
   no: { label: "No sponsorship", color: "#ef4444" },
 };
+
+// One row of GET /settings/ -> llm_providers
+export interface LlmProvider {
+  name: string;
+  model: string;
+  configured: boolean;
+  used_today: number;
+  daily_cap: number | null;
+  exhausted: boolean;
+}
 
 export interface Application {
   id: number;

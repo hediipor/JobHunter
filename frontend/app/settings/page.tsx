@@ -10,7 +10,7 @@ interface AppSettings {
   max_jobs_per_scan: number;
   search_terms: string[];
   locations: string[];
-  keys: { gemini: boolean; gmail: boolean; rapidapi: boolean };
+  keys: { gemini: boolean; groq: boolean; gmail: boolean; rapidapi: boolean };
   gmail_from: string;
 }
 
@@ -131,13 +131,14 @@ export default function SettingsPage() {
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>API Keys</h3>
           </div>
           <KeyStatus label="Gemini API key" ok={!!cfg?.keys.gemini} />
+          <KeyStatus label="Groq API key" ok={!!cfg?.keys.groq} />
           <KeyStatus label="RapidAPI key (JSearch)" ok={!!cfg?.keys.rapidapi} />
           <KeyStatus label={`Gmail app password (${cfg?.gmail_from || "not set"})`} ok={!!cfg?.keys.gmail} />
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 10 }}>
-            Gemini also powers the per-job AI check (fit score, visa sponsorship, dealbreakers)
-            and the daily digest email. On the free tier it's rate-limited to ~5 calls/min, so
-            each scan assesses its 10 strongest new jobs and the rest can be filled in from the
-            dashboard.
+            The per-job AI check (fit score, visa sponsorship, dealbreakers) runs on Groq first,
+            falling back to Gemini; CVs and cover letters run on Gemini first, falling back to
+            Groq. Either key alone works. Each scan assesses its 10 strongest new jobs and the
+            rest can be filled in from the dashboard.
           </p>
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 12 }}>
             Keys are stored in the backend <code style={{ background: "var(--bg)", padding: "2px 6px", borderRadius: 4 }}>.env</code> file.

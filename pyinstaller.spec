@@ -11,7 +11,7 @@ ROOT = SPECPATH
 datas = [(os.path.join(ROOT, "frontend", "out"), "frontend_out")]
 binaries = []
 hiddenimports = []
-for pkg in ("google.generativeai", "apscheduler", "reportlab", "bs4"):
+for pkg in ("apscheduler", "reportlab", "bs4"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
