@@ -147,12 +147,3 @@ def test_scan_and_single_triage_share_one_loop(monkeypatch, tmp_path):
     assert len(ids) == 3
     assert out["ai_score"] == 50.0
 
-
-if __name__ == "__main__":
-    import sys
-    mp = SimpleNamespace(setattr=lambda o, n, v: setattr(o, n, v))
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            (fn(mp) if fn.__code__.co_argcount else fn())
-            print(f"ok  {name}")
-    print("all passed")
