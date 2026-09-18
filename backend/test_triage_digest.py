@@ -97,6 +97,57 @@ def test_triage_job_parse(monkeypatch):
     assert out == {"fit_score": 55.0, "verdict": "ok", "sponsorship": "no", "dealbreakers": ["x"]}
 
 
+def test_scan_and_single_triage_share_one_loop(monkeypatch, tmp_path):
+    """Phase 0: a scan's triage and a single-job triage contend for the same
+    module-level asyncio.Lock. On one loop that's fine; across loops it raised
+    'bound to a different event loop'."""
+    import time
+    import ai_generator, scan_service, user_settings
+    from routes import jobs as jobs_route
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from database import Base, Job
+
+    monkeypatch.setattr(ai_generator.settings, "gemini_api_key", "fake")
+    monkeypatch.setattr(ai_generator, "TRIAGE_MIN_INTERVAL", 0)
+    monkeypatch.setattr(ai_generator, "_triage_lock", asyncio.Lock())
+    monkeypatch.setattr(ai_generator, "_call", lambda p: (
+        time.sleep(0.05),  # hold the lock long enough for the other side to queue
+        '{"fit_score": 50, "verdict": "ok", "sponsorship": "no", "dealbreakers": []}')[1])
+
+    profile = tmp_path / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(jobs_route, "settings", SimpleNamespace(profile_path=profile))
+    monkeypatch.setattr(scan_service, "_load_profile", lambda: {})
+    monkeypatch.setattr(user_settings, "load", lambda: {"search_terms": [], "locations": [], "max_jobs_per_scan": 5})
+
+    async def fake_scrape(**_):
+        return [dict(title=f"T{i}", company="C", location="L", url=f"https://x/{i}") for i in range(3)]
+
+    async def noop(_jobs):
+        pass
+    monkeypatch.setattr(scan_service, "scrape_all", fake_scrape)
+    monkeypatch.setattr(scan_service, "enrich_keejob_details", noop)
+
+    eng = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(eng)
+    factory = sessionmaker(bind=eng)
+    db = factory()
+    db.add(Job(url="https://x/existing", title="Old", company="C"))
+    db.commit()
+    job_id = db.query(Job).first().id
+
+    async def both():
+        return await asyncio.gather(
+            scan_service.scan_and_store(factory),
+            jobs_route.triage_one(job_id, db),
+        )
+    ids, out = asyncio.run(both())  # any loop-binding error propagates here
+    assert len(ids) == 3
+    assert out["ai_score"] == 50.0
+
+
 if __name__ == "__main__":
     import sys
     mp = SimpleNamespace(setattr=lambda o, n, v: setattr(o, n, v))

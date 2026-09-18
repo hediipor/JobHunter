@@ -104,6 +104,7 @@ async def _run_scan(session_factory) -> list[int]:
     )
     profile = _load_profile()
     now = datetime.datetime.utcnow()
+    # Sync SQLAlchemy on the event loop — deliberate: local SQLite, sub-ms queries.
     db = session_factory()
     try:
         new_jobs = []

@@ -3,10 +3,11 @@
 """
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,22 @@ from ai_generator import generate_cv_data, generate_cover_letter, generate_email
 from pdf_builder import build_cv_pdf, build_cover_letter_pdf
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger("jobs")
+
+# The loop only weakly references tasks — hold them here until they finish or
+# they can be garbage-collected mid-flight.
+_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    def _done(t: asyncio.Task):
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            logger.error(f"❌ Background task failed: {t.exception()!r}")
+
+    t = asyncio.create_task(coro)
+    _tasks.add(t)
+    t.add_done_callback(_done)
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────
@@ -162,18 +179,20 @@ def mark_applied(job_id: int, db: Session = Depends(get_db)):
 # ── POST /jobs/{id}/triage ────────────────────────────────────────────────────
 
 @router.post("/{job_id:int}/triage")
-def triage_one(job_id: int, db: Session = Depends(get_db)):
+async def triage_one(job_id: int, db: Session = Depends(get_db)):
     """Run (or re-run) the Gemini fit + sponsorship check on a single job."""
     from scan_service import _apply_triage
     from ai_generator import triage_job
 
+    # Sync SQLAlchemy inside async endpoints runs on the event loop — deliberate:
+    # local SQLite queries are sub-millisecond, not worth a thread hop.
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
         raise HTTPException(404, "Job not found")
     with open(settings.profile_path, encoding="utf-8") as f:
         profile = json.load(f)
 
-    result = asyncio.run(triage_job(profile, _job_out(j)))
+    result = await triage_job(profile, _job_out(j))
     if not _apply_triage(j, result):
         raise HTTPException(502, "Gemini returned nothing — check the GEMINI_API_KEY.")
     db.commit()
@@ -182,9 +201,8 @@ def triage_one(job_id: int, db: Session = Depends(get_db)):
 
 # ── POST /jobs/triage-pending ─────────────────────────────────────────────────
 
-def _triage_pending(session_factory, limit: int):
+async def _triage_pending(session_factory, limit: int):
     """Background task: triage fresh jobs that were never assessed."""
-    import asyncio as _a
     from database import fresh_jobs
     from scan_service import triage_jobs
 
@@ -199,14 +217,14 @@ def _triage_pending(session_factory, limit: int):
             .limit(limit)
             .all()
         )
-        _a.run(triage_jobs(db, pending, profile))
+        await triage_jobs(db, pending, profile)
         db.commit()
     finally:
         db.close()
 
 
 @router.post("/triage-pending")
-def triage_pending(background_tasks: BackgroundTasks, limit: int = 25, db: Session = Depends(get_db)):
+async def triage_pending(limit: int = 25, db: Session = Depends(get_db)):
     """Kick off Gemini triage for fresh jobs that haven't been assessed yet.
     Rate-limited (~13s/job) for the free tier, so it runs in the background."""
     from database import SessionLocal, fresh_jobs
@@ -215,26 +233,20 @@ def triage_pending(background_tasks: BackgroundTasks, limit: int = 25, db: Sessi
     if not n:
         return {"message": "All fresh jobs already assessed."}
     take = min(n, limit)
-    background_tasks.add_task(_triage_pending, SessionLocal, limit)
+    _spawn(_triage_pending(SessionLocal, limit))
     return {"message": f"Assessing {take} of {n} pending job(s) — ~{round(take * 13 / 60)} min. Refresh to see results."}
 
 
 # ── POST /jobs/scan ───────────────────────────────────────────────────────────
 
-def _do_scan(db_session_factory):
-    """Background task: run the shared scan pipeline."""
-    from scan_service import scan_and_store
-    return asyncio.run(scan_and_store(db_session_factory))
-
-
 @router.post("/scan")
-def trigger_scan(background_tasks: BackgroundTasks):
+async def trigger_scan():
     from database import SessionLocal
-    from scan_service import get_scan_state
+    from scan_service import get_scan_state, scan_and_store
 
     if get_scan_state()["running"]:
         return {"message": "A scan is already running"}
-    background_tasks.add_task(_do_scan, SessionLocal)
+    _spawn(scan_and_store(SessionLocal))
     return {"message": "Scan started in background"}
 
 
@@ -250,7 +262,7 @@ def scan_status():
 # ── POST /jobs/{id}/generate ──────────────────────────────────────────────────
 
 @router.post("/{job_id:int}/generate")
-def generate_documents(job_id: int, db: Session = Depends(get_db)):
+async def generate_documents(job_id: int, db: Session = Depends(get_db)):
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
         raise HTTPException(404, "Job not found")
@@ -260,20 +272,16 @@ def generate_documents(job_id: int, db: Session = Depends(get_db)):
 
     job_dict = _job_out(j)
 
-    async def _gen():
-        cv_data = await generate_cv_data(profile, job_dict)
-        cl_text = await generate_cover_letter(profile, job_dict, cv_data)
-        subject, body = await generate_email(profile, job_dict, cl_text)
-        return cv_data, cl_text, subject, body
+    cv_data = await generate_cv_data(profile, job_dict)
+    cl_text = await generate_cover_letter(profile, job_dict, cv_data)
+    subject, body = await generate_email(profile, job_dict, cl_text)
 
-    cv_data, cl_text, subject, body = asyncio.run(_gen())
-
-    # Build PDFs
+    # Build PDFs — ReportLab is CPU-bound, keep it off the loop
     slug = f"job_{job_id}"
     cv_path = settings.generated_dir / f"CV_{slug}.pdf"
     cl_path = settings.generated_dir / f"CL_{slug}.pdf"
-    build_cv_pdf(profile, cv_data, cv_path)
-    build_cover_letter_pdf(profile, job_dict, cl_text, cl_path)
+    await asyncio.to_thread(build_cv_pdf, profile, cv_data, cv_path)
+    await asyncio.to_thread(build_cover_letter_pdf, profile, job_dict, cl_text, cl_path)
 
     # Persist / update application record
     app = db.query(Application).filter(Application.job_id == job_id).first()
