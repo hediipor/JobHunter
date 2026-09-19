@@ -17,7 +17,7 @@ def two(monkeypatch):
     fake_providers(monkeypatch, "first", "second")
     calls = []
 
-    async def post(p, prompt):
+    async def post(p, prompt, timeout):
         calls.append(p.name)
         if p.name == "first":
             return DAILY_429
@@ -27,10 +27,10 @@ def two(monkeypatch):
 
 
 def test_daily_quota_falls_through_and_is_not_retried(two):
-    assert asyncio.run(llm.complete("p", tier="fast")) == ("hi", "second")
+    assert asyncio.run(llm.complete("p", tier="fast")) == ("hi", "second", "m")
     assert two == ["first", "second"]
 
-    assert asyncio.run(llm.complete("p", tier="fast")) == ("hi", "second")
+    assert asyncio.run(llm.complete("p", tier="fast")) == ("hi", "second", "m")
     assert two == ["first", "second", "second"]  # 'first' skipped for the rest of the day
 
 
@@ -66,19 +66,62 @@ def test_per_minute_429_waits_and_retries(monkeypatch):
     responses = [resp(429, headers={"retry-after": "0"}, text="tokens per minute (TPM)"),
                  resp(200, json={"choices": [{"message": {"content": "ok"}}]})]
 
-    async def post(p, prompt):
+    async def post(p, prompt, timeout):
         return responses.pop(0)
     monkeypatch.setattr(llm, "_post", post)
     monkeypatch.setattr(llm, "_retry_after", lambda *a: 0)
-    assert asyncio.run(llm.complete("p", tier="fast")) == ("ok", "only")
+    assert asyncio.run(llm.complete("p", tier="fast")) == ("ok", "only", "m")
     assert not llm._budget["only"]["exhausted_until"]
 
 
 def test_non_quota_failure_is_llm_error(monkeypatch):
     fake_providers(monkeypatch, "only")
 
-    async def post(p, prompt):
+    async def post(p, prompt, timeout):
         return resp(500)
     monkeypatch.setattr(llm, "_post", post)
     with pytest.raises(llm.LLMError):
+        asyncio.run(llm.complete("p", tier="fast"))
+
+
+def test_outage_puts_provider_on_cooldown(monkeypatch):
+    """A timeout skips that provider on the next call — no second 45s hang —
+    until the cooldown expires."""
+    fake_providers(monkeypatch, "slow", "backup")
+    calls = []
+
+    async def post(p, prompt, timeout):
+        calls.append(p.name)
+        if p.name == "slow":
+            raise llm.httpx.ReadTimeout("hung")
+        return resp(200, json={"choices": [{"message": {"content": "ok"}}]})
+    monkeypatch.setattr(llm, "_post", post)
+
+    assert asyncio.run(llm.complete("p", tier="fast")) == ("ok", "backup", "m")
+    assert asyncio.run(llm.complete("p", tier="fast")) == ("ok", "backup", "m")
+    assert calls == ["slow", "backup", "backup"]      # skipped while cooling down
+
+    monkeypatch.setattr(llm, "_cooldown_until", {"slow": 0})  # cooldown over
+    asyncio.run(llm.complete("p", tier="fast"))
+    assert calls[-2:] == ["slow", "backup"]
+
+
+def test_quota_429_is_not_a_cooldown(two):
+    asyncio.run(llm.complete("p", tier="fast"))
+    assert "first" not in llm._cooldown_until
+
+
+def test_tokens_counted_toward_daily_cap(monkeypatch):
+    """Groq's binding limit is tokens/day, not requests/day."""
+    table = fake_providers(monkeypatch, "only")
+    table["only"].tpd = 1000
+
+    async def post(p, prompt, timeout):
+        return resp(200, json={"choices": [{"message": {"content": "ok"}}],
+                               "usage": {"total_tokens": 600}})
+    monkeypatch.setattr(llm, "_post", post)
+    asyncio.run(llm.complete("p", tier="fast"))
+    asyncio.run(llm.complete("p", tier="fast"))        # 1200 >= 1000
+    assert llm.status()[0]["tokens_today"] == 1200
+    with pytest.raises(llm.AllProvidersExhausted):
         asyncio.run(llm.complete("p", tier="fast"))

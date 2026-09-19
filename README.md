@@ -61,8 +61,10 @@ Open [http://localhost:3000](http://localhost:3000).
 1. **Scan** — pulls postings from JSearch (LinkedIn, Indeed, Glassdoor, and
    more) and Keejob.com, deduplicated by URL, on a schedule you set in the
    Settings page (default: every 24h).
-2. **Match score** — each job gets a 0–100 score against your profile based
-   on skill keywords, title relevance, experience level, and language match.
+2. **AI fit check** — every new job is assessed by an LLM (Groq, falling back
+   to Gemini / OpenRouter): a 0–100 fit score for your actual level and stack,
+   a one-line verdict, visa sponsorship and dealbreakers. Jobs not assessed
+   yet (e.g. the day's free quota ran out) show as "pending AI check".
 3. **Generate** — Gemini tailors a CV and cover letter to the specific job
    (using only what's in your profile — it won't invent experience), turned
    into ATS-friendly PDFs.

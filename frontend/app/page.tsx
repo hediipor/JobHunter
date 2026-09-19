@@ -8,7 +8,12 @@ import JobCard from "@/components/JobCard";
 import { Briefcase, Send, MessageSquare, Gift, Star, RefreshCw, Loader2, Mail, Sparkles } from "lucide-react";
 import toast from "react-hot-toast";
 
-interface ScanStatus { running: boolean; added: number | null; error: string | null; }
+interface ScanStatus {
+  running: boolean; added: number | null; error: string | null;
+  triaged: number | null; failed: number | null; skipped: number | null; triage_error: string | null;
+}
+
+const kTokens = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 
 export default function Dashboard() {
   const qc = useQueryClient();
@@ -58,12 +63,19 @@ export default function Dashboard() {
   useEffect(() => {
     if (!watching || scanStatus?.running !== false) return;
     setWatching(false);
-    if (scanStatus.error) {
-      toast.error(`Scan failed: ${scanStatus.error}`);
+    const { error, added, triaged, failed, skipped, triage_error } = scanStatus;
+    if (error) {
+      toast.error(`Scan failed: ${error}`);
+    } else if (!added) {
+      toast.success("✅ Scan complete — no new jobs this time.");
     } else {
-      toast.success(
-        scanStatus.added ? `✅ Scan complete — ${scanStatus.added} new job(s) found.` : "✅ Scan complete — no new jobs this time."
-      );
+      toast.success(`✅ Scan complete — ${added} new job(s), ${triaged ?? 0} AI-checked.`, { duration: 6000 });
+      // A scan that found jobs but couldn't assess them is not a clean success.
+      if (failed || skipped) {
+        const parts = [failed ? `${failed} failed` : "", skipped ? `${skipped} left pending (out of quota)` : ""];
+        toast.error(`AI check: ${parts.filter(Boolean).join(", ")}${triage_error ? ` — ${triage_error}` : ""}`,
+          { duration: 10000 });
+      }
     }
     qc.invalidateQueries({ queryKey: ["stats"] });
     qc.invalidateQueries({ queryKey: ["settings"] });
@@ -92,13 +104,13 @@ export default function Dashboard() {
   const digestMutation = useMutation({
     mutationFn: () => api.post("/stats/digest"),
     onSuccess: (d: any) => toast.success(d?.message || "📧 Digest sent to your inbox"),
-    onError: () => toast.error("Digest failed — no recent jobs, or Gmail not configured."),
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const triageMutation = useMutation({
     mutationFn: () => api.post("/jobs/triage-pending"),
     onSuccess: (d: any) => toast.success(d?.message || "🤖 Assessing jobs…", { duration: 6000 }),
-    onError: () => toast.error("Triage failed — check your API keys or quota."),
+    onError: (e: Error) => toast.error(`AI check failed: ${e.message}`),
   });
 
   const topJobsList = (topJobs || []).slice(0, 6);
@@ -157,7 +169,10 @@ export default function Dashboard() {
           {providers.map(p => (
             <span key={p.name} title={p.model}
               className={`badge ${p.exhausted ? "badge-score-low" : "badge-source"}`}>
-              {p.name}: {p.used_today}{p.daily_cap ? `/${p.daily_cap}` : ""} today
+              {/* Groq runs out of tokens/day long before requests/day — show the limit that binds */}
+              {p.name}: {p.daily_tokens
+                ? `${kTokens(p.tokens_today)}/${kTokens(p.daily_tokens)} tokens`
+                : `${p.used_today}${p.daily_cap ? `/${p.daily_cap}` : ""}`} today
               {p.exhausted && " · out of quota until 00:00 UTC"}
             </span>
           ))}
@@ -178,9 +193,12 @@ export default function Dashboard() {
           <div className="grid-2" style={{ marginBottom: 28 }}>
             {/* Score distribution */}
             <div className="card">
-              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Match Score Distribution</h3>
+              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Fit Score Distribution</h3>
+              <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 12 }}>
+                {stats.assessed} AI-checked{stats.total_jobs > stats.assessed && ` · ${stats.total_jobs - stats.assessed} pending`}
+              </p>
               {Object.entries(stats.score_distribution).map(([range, count]) => {
-                const pct = stats.total_jobs ? Math.round((count / stats.total_jobs) * 100) : 0;
+                const pct = stats.assessed ? Math.round((count / stats.assessed) * 100) : 0;
                 const color = range === "90-100" ? "var(--green)" : range === "70-89" ? "var(--accent2)" : range === "50-69" ? "var(--yellow)" : "var(--red)";
                 return (
                   <div key={range} style={{ marginBottom: 10 }}>
@@ -209,7 +227,7 @@ export default function Dashboard() {
               ))}
               <div style={{ marginTop: 16, padding: "10px 14px", background: "rgba(99,102,241,0.08)",
                 borderRadius: 8, fontSize: 13, color: "var(--text2)" }}>
-                ⚡ Avg match score: <strong style={{ color: "var(--accent)" }}>{stats.avg_score}%</strong>
+                ⚡ Avg fit score: <strong style={{ color: "var(--accent)" }}>{stats.assessed ? `${stats.avg_score}%` : "—"}</strong>
               </div>
             </div>
           </div>
@@ -222,10 +240,17 @@ export default function Dashboard() {
           <Star size={18} color="var(--yellow)" /> Top Matching Jobs
         </h2>
         {topJobsList.length === 0 ? (
-          <div className="empty">
-            <h3>No jobs yet</h3>
-            <p>Click <strong>Scan Jobs Now</strong> to discover opportunities matching your profile.</p>
-          </div>
+          stats?.total_jobs ? (
+            <div className="empty">
+              <h3>No strong fits yet</h3>
+              <p>No AI-checked job scores 60%+. {stats.total_jobs - stats.assessed} job(s) are still pending AI check.</p>
+            </div>
+          ) : (
+            <div className="empty">
+              <h3>No jobs yet</h3>
+              <p>Click <strong>Scan Jobs Now</strong> to discover opportunities matching your profile.</p>
+            </div>
+          )
         ) : (
           <div className="grid-3">
             {topJobsList.map(j => (

@@ -1,7 +1,20 @@
 "use client";
-import { Job, SOURCE_COLORS, SPONSORSHIP_META, effectiveScore } from "@/lib/types";
+import { Job, SOURCE_COLORS, SPONSORSHIP_META } from "@/lib/types";
 import Link from "next/link";
 import { MapPin, ExternalLink, Building2, AlertTriangle } from "lucide-react";
+
+function PendingRing() {
+  return (
+    <div className="score-ring" title="Not assessed yet — waiting for the AI check">
+      <svg width={52} height={52} viewBox="0 0 52 52">
+        <circle cx={26} cy={26} r={22} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth={3} strokeDasharray="3 4" />
+      </svg>
+      <span className="score-label" style={{ fontSize: 9, lineHeight: 1.1, textAlign: "center", color: "var(--text3)" }}>
+        <span>pending<br />AI check</span>
+      </span>
+    </div>
+  );
+}
 
 function ScoreRing({ score }: { score: number }) {
   const r = 22, stroke = 3;
@@ -49,7 +62,7 @@ export default function JobCard({ job, onApply }: Props) {
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{job.company}</span>
           </div>
         </div>
-        <ScoreRing score={Math.round(effectiveScore(job))} />
+        {job.assessed && job.fit_score != null ? <ScoreRing score={Math.round(job.fit_score)} /> : <PendingRing />}
       </div>
 
       {/* Meta */}

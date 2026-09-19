@@ -11,8 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
-
 import llm
 from config import settings
 from database import Application, Job, fresh_jobs, get_db
@@ -50,11 +48,13 @@ class JobOut(BaseModel):
     job_type: str
     date_posted: str
     salary: str
-    match_score: float
     match_reasons: List[str]
     status: str
     is_applied: bool
-    ai_score: Optional[float] = None
+    fit_score: Optional[float] = None   # the only score shown; None = pending AI check
+    assessed: bool = False
+    ai_provider: str = ""
+    ai_model: str = ""
     ai_verdict: str = ""
     sponsorship: str = ""
     dealbreakers: List[str] = []
@@ -86,11 +86,13 @@ def _job_out(j: Job) -> dict:
         "job_type": j.job_type or "",
         "date_posted": j.date_posted or "",
         "salary": j.salary or "",
-        "match_score": j.match_score or 0.0,
         "match_reasons": _json_list(j.match_reasons),
         "status": j.status or "new",
         "is_applied": j.is_applied or False,
-        "ai_score": j.ai_score,
+        "fit_score": j.fit_score,
+        "assessed": j.fit_score is not None,
+        "ai_provider": j.ai_provider or "",
+        "ai_model": j.ai_model or "",
         "ai_verdict": j.ai_verdict or "",
         "sponsorship": j.sponsorship or "",
         "dealbreakers": _json_list(j.dealbreakers),
@@ -110,21 +112,20 @@ def list_jobs(
     include_stale: bool = False,
     db: Session = Depends(get_db),
 ):
-    # rank by the Gemini fit score when we have one, else the keyword score
-    effective = func.coalesce(Job.ai_score, Job.match_score)
     q = db.query(Job) if include_stale else fresh_jobs(db)
     if source:
         q = q.filter(Job.source == source)
     if status:
         q = q.filter(Job.status == status)
     if min_score:
-        q = q.filter(effective >= min_score)
+        q = q.filter(Job.fit_score >= min_score)  # pending jobs have no score to pass
     if location:
         q = q.filter(Job.location.ilike(f"%{location}%"))
     if sponsorship:
         wanted = [s.strip() for s in sponsorship.split(",") if s.strip()]
         q = q.filter(Job.sponsorship.in_(wanted))
-    jobs = q.order_by(effective.desc()).all()
+    # assessed first by fit; pending after, in the order they'll be triaged
+    jobs = q.order_by(Job.fit_score.desc().nulls_last(), Job.match_score.desc()).all()
     return [_job_out(j) for j in jobs]
 
 
@@ -182,8 +183,8 @@ def mark_applied(job_id: int, db: Session = Depends(get_db)):
 @router.post("/{job_id:int}/triage")
 async def triage_one(job_id: int, db: Session = Depends(get_db)):
     """Run (or re-run) the AI fit + sponsorship check on a single job."""
-    from scan_service import _apply_triage
-    from ai_generator import triage_job
+    from scan_service import _apply_triage, _job_dict
+    from ai_generator import TriageParseError, triage_batch
 
     # Sync SQLAlchemy inside async endpoints runs on the event loop — deliberate:
     # local SQLite queries are sub-millisecond, not worth a thread hop.
@@ -194,11 +195,12 @@ async def triage_one(job_id: int, db: Session = Depends(get_db)):
         profile = json.load(f)
 
     try:
-        result = await triage_job(profile, _job_out(j))
+        [result], provider, model = await triage_batch(profile, [_job_dict(j)])
     except llm.AllProvidersExhausted:
         raise HTTPException(503, "Every LLM provider is out of quota for today.")
-    if not _apply_triage(j, result):
-        raise HTTPException(502, "The LLM returned nothing usable — check your API keys.")
+    except (llm.LLMError, TriageParseError) as exc:
+        raise HTTPException(502, f"AI check failed: {exc}")
+    _apply_triage(j, result, provider, model)
     db.commit()
     return _job_out(j)
 
@@ -217,7 +219,7 @@ async def _triage_pending(session_factory, limit: int):
         pending = (
             fresh_jobs(db)
             .filter(Job.ai_assessed_at.is_(None))
-            .order_by(func.coalesce(Job.ai_score, Job.match_score).desc())
+            .order_by(Job.match_score.desc())  # keyword hint: likeliest fits first
             .limit(limit)
             .all()
         )

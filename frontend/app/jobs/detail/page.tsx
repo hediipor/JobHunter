@@ -4,7 +4,7 @@ import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import api, { API_BASE } from "@/lib/api";
-import { Job, SPONSORSHIP_META, effectiveScore } from "@/lib/types";
+import { Job, SPONSORSHIP_META } from "@/lib/types";
 import { ArrowLeft, ExternalLink, FileText, Mail, Send, Loader2, MapPin, Building2, Zap, Sparkles, AlertTriangle } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -26,7 +26,7 @@ function JobDetailContent() {
       qc.invalidateQueries({ queryKey: ["job", id] });
       toast.success("📄 CV & Cover Letter generated!");
     },
-    onError: () => toast.error("Generation failed — check your API keys or quota."),
+    onError: (e: Error) => toast.error(`Generation failed: ${e.message}`),
   });
 
   const applyMutation = useMutation({
@@ -37,7 +37,7 @@ function JobDetailContent() {
       qc.invalidateQueries({ queryKey: ["job", id] });
       qc.invalidateQueries({ queryKey: ["stats"] });
     },
-    onError: (err: any) => toast.error("Email failed — check Gmail settings."),
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const triageMutation = useMutation({
@@ -46,7 +46,7 @@ function JobDetailContent() {
       toast.success("🤖 AI assessment updated");
       qc.invalidateQueries({ queryKey: ["job", id] });
     },
-    onError: () => toast.error("Triage failed — check your API keys or quota."),
+    onError: (e: Error) => toast.error(`AI check failed: ${e.message}`),
   });
 
   const markAppliedMutation = useMutation({
@@ -64,12 +64,12 @@ function JobDetailContent() {
   if (isLoading) return <div className="spinner" />;
   if (!job) return <div className="empty"><h3>Job not found</h3></div>;
 
-  const score = Math.round(effectiveScore(job));
+  const score = job.assessed && job.fit_score != null ? Math.round(job.fit_score) : null;
   const sponsor = job.sponsorship ? SPONSORSHIP_META[job.sponsorship] : undefined;
   const dealbreakers = job.dealbreakers ?? [];
-  const scoreColor = score >= 70 ? "var(--green)" : score >= 50 ? "var(--yellow)" : "var(--red)";
+  const scoreColor = score == null ? "var(--text3)" : score >= 70 ? "var(--green)" : score >= 50 ? "var(--yellow)" : "var(--red)";
   const circ = 2 * Math.PI * 38;
-  const filled = (score / 100) * circ;
+  const filled = ((score ?? 0) / 100) * circ;
 
   return (
     <div>
@@ -99,8 +99,16 @@ function JobDetailContent() {
                 </svg>
                 <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
                   alignItems: "center", justifyContent: "center" }}>
-                  <span style={{ fontSize: 20, fontWeight: 800, color: scoreColor }}>{score}%</span>
-                  <span style={{ fontSize: 10, color: "var(--text2)" }}>Match</span>
+                  {score != null ? (
+                    <>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: scoreColor }}>{score}%</span>
+                      <span style={{ fontSize: 10, color: "var(--text2)" }}>AI fit</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--text3)", textAlign: "center", lineHeight: 1.2 }}>
+                      pending<br />AI check
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -132,8 +140,8 @@ function JobDetailContent() {
                   {job.ai_verdict}
                 </p>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: dealbreakers.length ? 12 : 0 }}>
-                  {job.ai_score != null && (
-                    <span className="badge badge-source">AI fit {Math.round(job.ai_score)}%</span>
+                  {job.fit_score != null && (
+                    <span className="badge badge-source">AI fit {Math.round(job.fit_score)}%</span>
                   )}
                   {sponsor && (
                     <span className="badge badge-source" style={{ borderColor: sponsor.color + "55", color: sponsor.color }}>
@@ -147,10 +155,16 @@ function JobDetailContent() {
                     <AlertTriangle size={13} style={{ marginTop: 2, flexShrink: 0 }} /> {d}
                   </div>
                 ))}
+                {job.ai_provider && (
+                  <p style={{ fontSize: 11, color: "var(--text3)", marginTop: 8 }}>
+                    Assessed by {job.ai_provider} · {job.ai_model}
+                  </p>
+                )}
               </>
             ) : (
               <p style={{ fontSize: 13, color: "var(--text3)" }}>
-                Not assessed yet. The AI checks the top matches each scan — run it manually here.
+                Pending AI check. Every scan assesses all its new jobs, until the day&apos;s LLM quota
+                runs out — run it manually here, or use Run AI Check on the dashboard.
               </p>
             )}
           </div>

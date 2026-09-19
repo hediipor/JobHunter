@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey,
     Integer, String, Text, create_engine, func,
 )
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config import settings
@@ -33,19 +34,29 @@ class Job(Base):
     job_type = Column(String)        # full-time | internship | remote
     date_posted = Column(String)
     salary = Column(String)
-    match_score = Column(Float, default=0.0)
+    match_score = Column(Float, default=0.0)  # keyword hint: only orders which jobs get triaged first — never shown
     match_reasons = Column(Text)     # JSON array
     status = Column(String, default="new")   # new | saved | applied | interview | offer | rejected
     is_applied = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.datetime.utcnow, index=True)  # bumped every scan the URL still appears
 
-    # ── Gemini triage (nullable = not yet assessed) ──────────────────────────
+    # ── LLM triage (nullable = not yet assessed) ─────────────────────────────
     ai_score = Column(Float)                      # realistic fit 0-100
     ai_verdict = Column(String, default="")       # one-line human summary
     sponsorship = Column(String, default="")     # yes | likely | unclear | no
     dealbreakers = Column(Text, default="[]")     # JSON array of hard blockers
     ai_assessed_at = Column(DateTime)
+    ai_provider = Column(String)                  # groq | gemini | openrouter — who wrote the verdict
+    ai_model = Column(String)
+    triage_version = Column(Integer)              # ai_generator.TRIAGE_VERSION at assessment; NULL = pre-versioning
+
+    @hybrid_property
+    def fit_score(self):
+        """THE score the user sees — in the jobs list, stats and digest alike.
+        None/NULL = pending AI check; never falls back to match_score.
+        Works on a row (j.fit_score) and in SQL (Job.fit_score)."""
+        return self.ai_score
 
 
 class Application(Base):
@@ -78,6 +89,9 @@ def create_tables():
             ("sponsorship", "sponsorship VARCHAR DEFAULT ''"),
             ("dealbreakers", "dealbreakers TEXT DEFAULT '[]'"),
             ("ai_assessed_at", "ai_assessed_at DATETIME"),
+            ("ai_provider", "ai_provider VARCHAR"),
+            ("ai_model", "ai_model VARCHAR"),
+            ("triage_version", "triage_version INTEGER"),
         ]:
             if col not in cols:
                 conn.exec_driver_sql(f"ALTER TABLE jobs ADD COLUMN {ddl}")

@@ -31,6 +31,8 @@ class Provider:
     api_key: str
     rpm: int
     rpd: int | None  # None = no daily cap worth tracking
+    tpm: int | None = None  # tokens/min and /day — hidden reasoning tokens count too
+    tpd: int | None = None
 
 
 class AllProvidersExhausted(Exception):
@@ -44,15 +46,21 @@ class LLMError(Exception):
 def _providers() -> dict[str, Provider]:
     # Built per call so a key saved from the setup wizard takes effect immediately.
     # Free-tier limits as of 2026-09, all three verified live 2026-09-19.
+    # Groq's tokens bind first: 8K TPM / 200K TPD (console.groq.com/docs/rate-limits,
+    # x-ratelimit-limit-tokens: 8000) vs ~2K tokens per triaged job incl. reasoning.
     return {p.name: p for p in (
         Provider("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b",
-                 settings.groq_api_key, rpm=30, rpd=1000),
+                 settings.groq_api_key, rpm=30, rpd=1000, tpm=8000, tpd=200_000),
         Provider("gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
                  "gemini-3.6-flash", settings.gemini_api_key, rpm=5, rpd=20),
         Provider("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4-flash-0731:free",
                  settings.openrouter_api_key, rpm=20, rpd=50),
     )}
 
+
+# Seconds before giving up on one response. Triage falls through to the next
+# provider, so a hung one shouldn't cost minutes per batch.
+TIMEOUTS = {"fast": 45, "quality": 120}
 
 TIERS = {
     "fast":    ["groq", "gemini", "openrouter"],   # triage — high volume
@@ -94,7 +102,7 @@ def _entry(name: str) -> dict:
     today = _now().date().isoformat()
     e = _budget.get(name)
     if not e or e.get("date") != today:
-        e = _budget[name] = {"date": today, "count": 0, "exhausted_until": None}
+        e = _budget[name] = {"date": today, "count": 0, "tokens": 0, "exhausted_until": None}
     return e
 
 
@@ -102,7 +110,7 @@ def _is_exhausted(p: Provider) -> bool:
     e = _entry(p.name)
     if e["exhausted_until"] and dt.datetime.fromisoformat(e["exhausted_until"]) > _now():
         return True
-    return p.rpd is not None and e["count"] >= p.rpd
+    return (p.rpd is not None and e["count"] >= p.rpd) or         (p.tpd is not None and e.get("tokens", 0) >= p.tpd)
 
 
 def _mark_exhausted(name: str) -> None:
@@ -118,6 +126,7 @@ def status() -> list[dict]:
         e = _entry(p.name)
         out.append({"name": p.name, "model": p.model, "configured": bool(p.api_key),
                     "used_today": e["count"], "daily_cap": p.rpd,
+                    "tokens_today": e.get("tokens", 0), "daily_tokens": p.tpd,
                     "exhausted": bool(p.api_key) and _is_exhausted(p)})
     return out
 
@@ -163,18 +172,29 @@ _locks: dict[str, asyncio.Lock] = {}
 _last_at: dict[str, float] = {}
 
 
-async def _space(p: Provider) -> None:
-    """Hold this provider's slot for 60/rpm s. Released before the request, so
+# Budgeted per call on top of the prompt for output + hidden reasoning.
+# ponytail: a guess, not a measurement — a per-minute 429 still retries once if it's low.
+COMPLETION_ALLOWANCE = 1500
+
+
+def _est_tokens(prompt: str) -> int:
+    return len(prompt) // 4 + COMPLETION_ALLOWANCE
+
+
+async def _space(p: Provider, tokens: int) -> None:
+    """Hold this provider's slot for 60/rpm s — or longer if this call's
+    estimated tokens need it to stay under tpm. Released before the request, so
     a slow response doesn't hold up the next call, and other providers never wait."""
+    interval = max(60 / p.rpm, 60 * tokens / p.tpm if p.tpm else 0)
     async with _locks.setdefault(p.name, asyncio.Lock()):
-        wait = 60 / p.rpm - (time.monotonic() - _last_at.get(p.name, -1e9))
+        wait = interval - (time.monotonic() - _last_at.get(p.name, -1e9))
         if wait > 0:
             await asyncio.sleep(wait)
         _last_at[p.name] = time.monotonic()
 
 
-async def _post(p: Provider, prompt: str) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=120) as client:
+async def _post(p: Provider, prompt: str, timeout: float) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         return await client.post(
             f"{p.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {p.api_key}"},
@@ -182,11 +202,11 @@ async def _post(p: Provider, prompt: str) -> httpx.Response:
         )
 
 
-async def _call(p: Provider, prompt: str) -> str:
+async def _call(p: Provider, prompt: str, timeout: float) -> str:
     """One provider, one retry on a per-minute 429. Raises _Daily on daily quota."""
     for attempt in (1, 2):
-        await _space(p)
-        r = await _post(p, prompt)
+        await _space(p, _est_tokens(prompt))
+        r = await _post(p, prompt, timeout)
         if r.status_code == 429:
             if _is_daily(r.text):
                 raise _Daily(r.text[:300])
@@ -197,14 +217,29 @@ async def _call(p: Provider, prompt: str) -> str:
             await asyncio.sleep(wait)
             continue
         r.raise_for_status()
-        _entry(p.name)["count"] += 1
+        data = r.json()
+        e = _entry(p.name)
+        e["count"] += 1
+        e["tokens"] = e.get("tokens", 0) + ((data.get("usage") or {}).get("total_tokens") or 0)
         _save()
-        return r.json()["choices"][0]["message"]["content"] or ""
+        return data["choices"][0]["message"]["content"] or ""
 
 
-async def complete(prompt: str, *, tier: Literal["fast", "quality"]) -> tuple[str, str]:
-    """Try the tier's providers in order, skipping unconfigured and exhausted
-    ones. Returns (text, provider_name).
+# A provider that timed out / 5xx'd / dropped the connection is skipped until
+# this monotonic time. In memory only: a restart gives it a fresh chance.
+COOLDOWN_S = 300
+_cooldown_until: dict[str, float] = {}
+
+
+def _is_outage(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+
+async def complete(prompt: str, *, tier: Literal["fast", "quality"]) -> tuple[str, str, str]:
+    """Try the tier's providers in order, skipping unconfigured, exhausted and
+    cooling-down ones. Returns (text, provider_name, model).
     Raises AllProvidersExhausted if none has quota left, LLMError if the ones
     that did have quota all failed for other reasons."""
     providers = _providers()
@@ -213,13 +248,20 @@ async def complete(prompt: str, *, tier: Literal["fast", "quality"]) -> tuple[st
         p = providers[name]
         if not p.api_key or _is_exhausted(p):
             continue
+        if _cooldown_until.get(name, 0) > time.monotonic():
+            errors.append(f"{name}: cooling down after a failure")
+            continue
         try:
-            return await _call(p, prompt), name
+            return await _call(p, prompt, TIMEOUTS[tier]), name, p.model
         except _Daily as exc:
             logger.warning(f"{name}: daily quota spent, skipping until UTC midnight — {exc}")
             _mark_exhausted(name)
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-            logger.warning(f"{name}: {exc!r}, trying next provider")
+            if _is_outage(exc):
+                _cooldown_until[name] = time.monotonic() + COOLDOWN_S
+                logger.warning(f"{name}: {exc!r}, skipping it for {COOLDOWN_S // 60} min")
+            else:
+                logger.warning(f"{name}: {exc!r}, trying next provider")
             errors.append(f"{name}: {exc!r}")
     if errors:
         raise LLMError("; ".join(errors))

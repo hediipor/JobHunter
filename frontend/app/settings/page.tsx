@@ -137,8 +137,9 @@ export default function SettingsPage() {
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 10 }}>
             The per-job AI check (fit score, visa sponsorship, dealbreakers) runs on Groq first,
             falling back to Gemini; CVs and cover letters run on Gemini first, falling back to
-            Groq. Either key alone works. Each scan assesses its 10 strongest new jobs and the
-            rest can be filled in from the dashboard.
+            Groq. Either key alone works. Each scan assesses every new job; if the day&apos;s
+            quota runs out first, the rest show as &quot;pending AI check&quot; and can be filled
+            in from the dashboard.
           </p>
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 12 }}>
             Keys are stored in the backend <code style={{ background: "var(--bg)", padding: "2px 6px", borderRadius: 4 }}>.env</code> file.

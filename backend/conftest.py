@@ -6,11 +6,12 @@ import llm
 
 @pytest.fixture(autouse=True)
 def isolated_llm(monkeypatch, tmp_path):
-    """No test touches the real data/llm_budget.json or shares locks across loops."""
+    """No test touches the real data/llm_budget.json or shares locks/cooldowns across tests."""
     monkeypatch.setattr(llm, "BUDGET_PATH", tmp_path / "llm_budget.json")
     monkeypatch.setattr(llm, "_budget", {})
     monkeypatch.setattr(llm, "_locks", {})
     monkeypatch.setattr(llm, "_last_at", {})
+    monkeypatch.setattr(llm, "_cooldown_until", {})
 
 
 def fake_providers(monkeypatch, *names, rpm=6000, rpd=None):

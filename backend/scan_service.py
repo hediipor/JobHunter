@@ -8,7 +8,7 @@ import json
 import logging
 
 import llm
-from ai_generator import triage_job
+from ai_generator import TRIAGE_VERSION, TriageParseError, triage_batch, triage_batches
 from config import settings
 from database import Job
 from matcher import calculate_match
@@ -21,16 +21,12 @@ logger = logging.getLogger("scan")
 # a scan (scrape + triage) can run for minutes, way past any fixed timeout.
 # ponytail: single-process in-memory state — fine for one local user, would
 # need a shared store (DB row, Redis) behind more than one uvicorn worker.
-_scan_state: dict = {"running": False, "started_at": None, "finished_at": None, "added": None, "error": None}
+_scan_state: dict = {"running": False, "started_at": None, "finished_at": None, "added": None, "error": None,
+                     "triaged": None, "failed": None, "skipped": None, "triage_error": None}
 
 
 def get_scan_state() -> dict:
     return dict(_scan_state)
-
-
-# How many of each scan's new jobs get the AI triage pass — the highest
-# keyword-scored ones. Calls are rate-limited per provider inside llm.py.
-TRIAGE_TOP_N = 10
 
 
 def _load_profile() -> dict:
@@ -45,37 +41,66 @@ def _clean(s: str) -> str:
     return s.encode("utf-8", "ignore").decode("utf-8")
 
 
-def _apply_triage(job: Job, result: dict) -> bool:
-    """Write a triage_job() result onto a Job row (no commit). Returns False if
-    the result was empty (API down / no key) so the row is left unassessed."""
-    if result.get("fit_score") is None and not result.get("verdict"):
-        return False
-    job.ai_score = result.get("fit_score")
-    job.ai_verdict = result.get("verdict", "")
-    job.sponsorship = result.get("sponsorship", "") or "unclear"
-    job.dealbreakers = json.dumps(result.get("dealbreakers", []))
+def _apply_triage(job: Job, result: dict, provider: str, model: str) -> None:
+    """Write one parsed assessment onto a Job row (no commit)."""
+    job.ai_score = result["fit_score"]
+    job.ai_verdict = result["verdict"]
+    job.sponsorship = result["sponsorship"] or "unclear"
+    job.dealbreakers = json.dumps(result["dealbreakers"])
     job.ai_assessed_at = datetime.datetime.utcnow()
-    return True
+    job.ai_provider, job.ai_model, job.triage_version = provider, model, TRIAGE_VERSION
 
 
-async def triage_jobs(db, jobs: list[Job], profile: dict) -> None:
-    """Run AI triage over the given Job rows, in place. Caller commits.
-    Calls are rate-limited per provider inside llm.complete()."""
-    if not (jobs and llm.configured()):
-        return
-    done = 0
+def _job_dict(job: Job) -> dict:
+    return {"id": job.id, "title": job.title, "company": job.company,
+            "location": job.location, "description": job.description}
+
+
+async def triage_jobs(db, jobs: list[Job], profile: dict) -> dict:
+    """AI-triage the given Job rows in place, in the order given (highest
+    priority first), committing after each call. Returns
+    {triaged, failed, skipped, error}: skipped = never tried because every
+    provider's quota ran out; error = the last failure, for the dashboard."""
+    stats = {"triaged": 0, "failed": 0, "skipped": 0, "error": None}
+    if not jobs:
+        return stats
+    if not llm.configured():
+        stats.update(skipped=len(jobs), error="no LLM API key configured")
+        return stats
+
+    rows = {j.id: j for j in jobs}
+
+    async def run(batch: list[dict]) -> None:
+        results, provider, model = await triage_batch(profile, batch)
+        for d, r in zip(batch, results):
+            _apply_triage(rows[d["id"]], r, provider, model)
+        stats["triaged"] += len(batch)
+        db.commit()  # persist as we go — a mid-scan quota stop keeps progress
+
+    async def attempt(batch: list[dict]) -> None:
+        """A batch that fails or comes back malformed/misaligned is retried
+        one job per call, so one bad answer can't cost (or mislabel) the rest."""
+        try:
+            return await run(batch)
+        except (TriageParseError, llm.LLMError) as exc:
+            if len(batch) == 1:
+                logger.warning(f"triage failed for job {batch[0]['id']}: {exc}")
+                stats["failed"] += 1
+                stats["error"] = str(exc)
+                return
+            logger.warning(f"batch of {len(batch)} failed ({exc}), retrying one by one")
+        for one in batch:
+            await attempt([one])
+
     try:
-        for job in jobs:
-            if _apply_triage(job, await triage_job(profile, {
-                "title": job.title, "company": job.company,
-                "location": job.location, "description": job.description,
-            })):
-                done += 1
-                db.commit()  # persist as we go — a mid-batch quota stop keeps progress
-    except llm.AllProvidersExhausted:
-        logger.warning(f"🤖 Triaged {done}/{len(jobs)} — every LLM provider's daily quota is spent, stopping")
-        return
-    logger.info(f"🤖 Triaged {done}/{len(jobs)} jobs")
+        for batch in triage_batches(profile, [_job_dict(j) for j in jobs]):
+            await attempt(batch)
+    except llm.AllProvidersExhausted as exc:
+        stats["skipped"] = len(jobs) - stats["triaged"] - stats["failed"]
+        stats["error"] = str(exc)
+        logger.warning(f"🤖 every LLM provider's daily quota is spent — {stats['skipped']} job(s) left pending")
+    logger.info(f"🤖 Triage: {stats['triaged']} assessed, {stats['failed']} failed, {stats['skipped']} skipped")
+    return stats
 
 
 async def scan_and_store(session_factory) -> list[int]:
@@ -83,7 +108,8 @@ async def scan_and_store(session_factory) -> list[int]:
     from user_settings import load as load_user_settings
 
     _scan_state.update(running=True, started_at=datetime.datetime.utcnow().isoformat(),
-                        finished_at=None, added=None, error=None)
+                        finished_at=None, added=None, error=None,
+                        triaged=None, failed=None, skipped=None, triage_error=None)
     try:
         ids = await _run_scan(session_factory)
         _scan_state.update(running=False, finished_at=datetime.datetime.utcnow().isoformat(), added=len(ids))
@@ -143,9 +169,12 @@ async def _run_scan(session_factory) -> list[int]:
         db.commit()
         logger.info(f"✅ Scan done — {len(new_jobs)} new jobs added")
 
-        # Gemini takes a closer look at the most promising new jobs
+        # Every new job gets the AI check. The keyword score only decides the
+        # order, so if the day's quota runs out it's the weakest that stay pending.
         rows.sort(key=lambda r: r.match_score or 0, reverse=True)
-        await triage_jobs(db, rows[:TRIAGE_TOP_N], profile)
+        t = await triage_jobs(db, rows, profile)
+        _scan_state.update(triaged=t["triaged"], failed=t["failed"], skipped=t["skipped"],
+                           triage_error=t["error"])
         db.commit()
 
         return [r.id for r in rows]

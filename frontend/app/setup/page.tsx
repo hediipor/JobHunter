@@ -192,7 +192,7 @@ export default function SetupPage() {
             <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 6 }}>
               Powers AI job-fit scoring and CV/cover-letter writing. Free at{" "}
               <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a>.
-              Skip this and you&apos;ll still get keyword-based matching, just no AI verdicts.
+              Skip this and jobs are still collected, but stay &quot;pending AI check&quot; — no fit scores or verdicts.
             </p>
           </div>
 

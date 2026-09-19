@@ -8,20 +8,18 @@ export interface Job {
   job_type: string;
   date_posted: string;
   salary: string;
-  match_score: number;
   match_reasons: string[];
   status: string;
   is_applied: boolean;
-  ai_score?: number | null;
+  fit_score: number | null;   // the AI fit score — the only score shown
+  assessed: boolean;          // false = "pending AI check", never a number
+  ai_provider?: string;
+  ai_model?: string;
   ai_verdict?: string;
   sponsorship?: string;   // yes | likely | unclear | no
   dealbreakers?: string[];
   description?: string;
 }
-
-// AI triage score if present, else the keyword score.
-export const effectiveScore = (j: Pick<Job, "ai_score" | "match_score">): number =>
-  j.ai_score != null ? j.ai_score : j.match_score;
 
 export const SPONSORSHIP_META: Record<string, { label: string; color: string }> = {
   yes: { label: "Sponsors / remote-OK", color: "#10b981" },
@@ -37,6 +35,8 @@ export interface LlmProvider {
   configured: boolean;
   used_today: number;
   daily_cap: number | null;
+  tokens_today: number;
+  daily_tokens: number | null;  // set when tokens/day is the limit that binds (Groq)
   exhausted: boolean;
 }
 
@@ -55,6 +55,7 @@ export interface Application {
 
 export interface Stats {
   total_jobs: number;
+  assessed: number;  // jobs with a fit score; the rest are pending AI check
   applied: number;
   interviews: number;
   offers: number;

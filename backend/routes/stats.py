@@ -25,7 +25,11 @@ def get_stats(db: Session = Depends(get_db)):
     offers = db.query(func.count(Application.id)).filter(
         Application.response_status == "offer"
     ).scalar() or 0
-    avg_score = db.query(func.avg(fresh.c.match_score)).scalar() or 0
+    # Scores are the AI fit score only (Job.fit_score), and only assessed jobs
+    # count — a pending job has no score, not a score of 0.
+    scored = fresh_jobs(db).filter(Job.fit_score.isnot(None))
+    assessed = scored.count()
+    avg_score = scored.with_entities(func.avg(Job.fit_score)).scalar() or 0
 
     # Jobs by source
     sources_raw = (
@@ -35,10 +39,9 @@ def get_stats(db: Session = Depends(get_db)):
     )
     sources = {s: c for s, c in sources_raw}
 
-    # Score distribution buckets
+    # Fit score distribution buckets
     buckets = {"90-100": 0, "70-89": 0, "50-69": 0, "0-49": 0}
-    for (score,) in db.query(fresh.c.match_score).all():
-        s = score or 0
+    for (s,) in scored.with_entities(Job.fit_score).all():
         if s >= 90:
             buckets["90-100"] += 1
         elif s >= 70:
@@ -48,16 +51,11 @@ def get_stats(db: Session = Depends(get_db)):
         else:
             buckets["0-49"] += 1
 
-    # Recent jobs (top 5 by score)
-    recent = (
-        fresh_jobs(db)
-        .order_by(Job.match_score.desc())
-        .limit(5)
-        .all()
-    )
+    top = scored.order_by(Job.fit_score.desc()).limit(5).all()
 
     return {
         "total_jobs": total_jobs,
+        "assessed": assessed,
         "applied": applied,
         "interviews": interviews,
         "offers": offers,
@@ -65,8 +63,8 @@ def get_stats(db: Session = Depends(get_db)):
         "sources": sources,
         "score_distribution": buckets,
         "top_jobs": [
-            {"id": j.id, "title": j.title, "company": j.company, "score": j.match_score}
-            for j in recent
+            {"id": j.id, "title": j.title, "company": j.company, "score": j.fit_score}
+            for j in top
         ],
     }
 
