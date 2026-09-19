@@ -11,28 +11,28 @@ const BACKEND =
 // API_BASE itself since that's also used bare for /files/... PDF links.
 const url = (path: string) => `${BACKEND}/api${path}`;
 
+// Non-2xx throws, with FastAPI's `detail` as the message — so a 503 "out of
+// quota" lands in onError instead of being parsed as a success payload.
+async function call(path: string, method = "GET", body?: unknown) {
+  const r = await fetch(url(path), {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json().catch(() => null);
+  if (!r.ok) {
+    const d = data?.detail;
+    throw new Error(typeof d === "string" ? d : `${r.status} ${r.statusText}`);
+  }
+  return data;
+}
+
 const api = {
-  get: (path: string) => fetch(url(path)).then(r => r.json()),
-  post: (path: string, body?: unknown) =>
-    fetch(url(path), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-    }).then(r => r.json()),
-  patch: (path: string, body: unknown) =>
-    fetch(url(path), {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).then(r => r.json()),
-  delete: (path: string) =>
-    fetch(url(path), { method: "DELETE" }).then(r => r.json()),
-  put: (path: string, body: unknown) =>
-    fetch(url(path), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).then(r => r.json()),
+  get: (path: string) => call(path),
+  post: (path: string, body?: unknown) => call(path, "POST", body),
+  patch: (path: string, body: unknown) => call(path, "PATCH", body),
+  delete: (path: string) => call(path, "DELETE"),
+  put: (path: string, body: unknown) => call(path, "PUT", body),
 };
 
 export default api;
