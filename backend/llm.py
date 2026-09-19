@@ -43,23 +43,20 @@ class LLMError(Exception):
 
 def _providers() -> dict[str, Provider]:
     # Built per call so a key saved from the setup wizard takes effect immediately.
-    # Free-tier limits as of 2026-09. Groq, Gemini and OpenRouter verified live
-    # 2026-09-19; the Cerebras key returned 402 (account needs billing enabled).
+    # Free-tier limits as of 2026-09, all three verified live 2026-09-19.
     return {p.name: p for p in (
         Provider("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b",
                  settings.groq_api_key, rpm=30, rpd=1000),
         Provider("gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
                  "gemini-3.6-flash", settings.gemini_api_key, rpm=5, rpd=20),
-        Provider("cerebras", "https://api.cerebras.ai/v1", "gpt-oss-120b",
-                 settings.cerebras_api_key, rpm=30, rpd=14400),
         Provider("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4-flash-0731:free",
                  settings.openrouter_api_key, rpm=20, rpd=50),
     )}
 
 
 TIERS = {
-    "fast":    ["groq", "gemini", "cerebras", "openrouter"],   # triage — high volume
-    "quality": ["gemini", "groq", "cerebras", "openrouter"],   # CV + cover letter — ~3/day
+    "fast":    ["groq", "gemini", "openrouter"],   # triage — high volume
+    "quality": ["gemini", "groq", "openrouter"],   # CV + cover letter — ~3/day
 }
 
 

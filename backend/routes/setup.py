@@ -37,7 +37,6 @@ def get_status():
 class KeysUpdate(BaseModel):
     gemini_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
-    cerebras_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     rapidapi_key: Optional[str] = None
     gmail_from: Optional[str] = None
