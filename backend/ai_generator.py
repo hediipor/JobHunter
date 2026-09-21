@@ -195,7 +195,7 @@ INSTRUCTIONS:
 - Write a 2-3 sentence professional summary tailored to this role.
 - Select and reorder the most relevant skills (max 12).
 - Select and reorder the most relevant projects (max 4).
-- Write 3-5 achievement bullets from the experience section, emphasising what matches the JD.
+- Write 3-5 achievement bullets from the most recent role in the experience section only, emphasising what matches the JD.
 
 Respond with ONLY a valid JSON object — no markdown, no extra text:
 {{

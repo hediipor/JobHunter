@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="JobHunter AI",
-    description="Personal job/internship finder and application assistant for Hedi Bou Maiza",
+    description="Personal job/internship finder and application assistant",
     version="1.0.0",
     lifespan=lifespan,
 )

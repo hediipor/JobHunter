@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 def profile_skills(profile: Dict | None) -> List[str]:
     """Every skill in profile["skills"] (lists of strings), lowercased, deduped."""
     lists = ((profile or {}).get("skills") or {}).values()
-    return list(dict.fromkeys(str(x).strip().lower() for l in lists for x in l if str(x).strip()))
+    return list(dict.fromkeys(str(x).strip().lower() for l in lists if isinstance(l, list) for x in l if str(x).strip()))
 
 
 JUNIOR_KEYWORDS = [

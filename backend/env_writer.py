@@ -20,7 +20,7 @@ GMAIL_FROM={GMAIL_FROM}
 RAPIDAPI_KEY={RAPIDAPI_KEY}
 
 # ── App Settings ───────────────────────────────────────────
-SCAN_INTERVAL_HOURS=6
+SCAN_INTERVAL_HOURS=48
 MAX_JOBS_PER_SCAN=50
 """
 

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     gmail_from: str = ""
     rapidapi_key: str = ""
 
-    scan_interval_hours: int = 6
+    scan_interval_hours: int = 48
     max_jobs_per_scan: int = 50
 
     # Daily digest email (sent after each scheduled scan)
