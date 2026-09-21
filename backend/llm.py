@@ -68,6 +68,11 @@ TIERS = {
 }
 
 
+# Requests per day the fast tier (triage) must leave untouched so CV/cover-letter
+# generation on the quality tier never finds the provider empty.
+QUALITY_RESERVE = {"gemini": 6}
+
+
 def configured() -> bool:
     return any(p.api_key for p in _providers().values())
 
@@ -247,6 +252,9 @@ async def complete(prompt: str, *, tier: Literal["fast", "quality"]) -> tuple[st
     for name in TIERS[tier]:
         p = providers[name]
         if not p.api_key or _is_exhausted(p):
+            continue
+        if tier == "fast" and p.rpd is not None and \
+                _entry(name)["count"] >= p.rpd - QUALITY_RESERVE.get(name, 0):
             continue
         if _cooldown_until.get(name, 0) > time.monotonic():
             errors.append(f"{name}: cooling down after a failure")

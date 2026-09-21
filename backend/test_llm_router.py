@@ -61,6 +61,25 @@ def test_all_exhausted(two, monkeypatch):
     assert two == ["first", "second"]                  # nothing was even attempted
 
 
+def test_fast_tier_leaves_reserve_for_quality(monkeypatch):
+    table = fake_providers(monkeypatch, "groq", "gemini")
+    table["groq"].rpd = 1
+    table["gemini"].rpd = 20
+    llm._entry("groq")["count"] = 1                    # groq is spent
+    llm._entry("gemini")["count"] = 14                 # 20 - QUALITY_RESERVE["gemini"]
+    calls = []
+
+    async def post(p, prompt, timeout):
+        calls.append(p.name)
+        return resp(200, json={"choices": [{"message": {"content": "ok"}}]})
+    monkeypatch.setattr(llm, "_post", post)
+
+    with pytest.raises(llm.AllProvidersExhausted):
+        asyncio.run(llm.complete("p", tier="fast"))
+    assert calls == []                                 # gemini never posted to
+    assert asyncio.run(llm.complete("p", tier="quality")) == ("ok", "gemini", "m")
+
+
 def test_per_minute_429_waits_and_retries(monkeypatch):
     fake_providers(monkeypatch, "only")
     responses = [resp(429, headers={"retry-after": "0"}, text="tokens per minute (TPM)"),
