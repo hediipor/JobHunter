@@ -32,6 +32,15 @@ def get_scan_state() -> dict:
     return dict(_scan_state)
 
 
+# Same idea for "Run AI Check" (routes/jobs.py): the result of the last run.
+_triage_state: dict = {"running": False, "finished_at": None, "triaged": None,
+                       "failed": None, "skipped": None, "error": None}
+
+
+def get_triage_state() -> dict:
+    return dict(_triage_state)
+
+
 def _load_profile() -> dict:
     with open(settings.profile_path, encoding="utf-8") as f:
         return json.load(f)
@@ -50,7 +59,7 @@ def _apply_triage(job: Job, result: dict, provider: str, model: str) -> None:
     job.ai_verdict = result["verdict"]
     job.sponsorship = result["sponsorship"] or "unclear"
     job.dealbreakers = json.dumps(result["dealbreakers"])
-    job.ai_assessed_at = datetime.datetime.utcnow()
+    job.ai_assessed_at = datetime.datetime.now(datetime.UTC)
     job.ai_provider, job.ai_model, job.triage_version = provider, model, TRIAGE_VERSION
 
 
@@ -152,18 +161,24 @@ def dedup(db, source_name: str, jobs: list[dict], pending: dict, now) -> list[di
     return fresh
 
 
-async def scan_and_store(session_factory) -> list[int]:
-    """Run a full scan, persist + triage new jobs. Returns the new job ids."""
-    _scan_state.update(running=True, started_at=datetime.datetime.utcnow().isoformat(),
+async def scan_and_store(session_factory) -> list[int] | None:
+    """Run a full scan, persist + triage new jobs. Returns the new job ids, or
+    None if a scan is already running (nothing was done)."""
+    # The guard and the flag flip happen before the first await, so on the one
+    # event loop two callers (schedule + manual) can't both get past it — two
+    # scans racing to insert the same new URL would hit the unique constraint.
+    if _scan_state["running"]:
+        return None
+    _scan_state.update(running=True, started_at=datetime.datetime.now(datetime.UTC).isoformat(),
                         finished_at=None, added=None, error=None,
                         triaged=None, failed=None, skipped=None, triage_error=None,
                         source_errors={})
     try:
         ids = await _run_scan(session_factory)
-        _scan_state.update(running=False, finished_at=datetime.datetime.utcnow().isoformat(), added=len(ids))
+        _scan_state.update(running=False, finished_at=datetime.datetime.now(datetime.UTC).isoformat(), added=len(ids))
         return ids
     except Exception as exc:
-        _scan_state.update(running=False, finished_at=datetime.datetime.utcnow().isoformat(), error=str(exc))
+        _scan_state.update(running=False, finished_at=datetime.datetime.now(datetime.UTC).isoformat(), error=str(exc))
         raise
 
 
@@ -179,7 +194,7 @@ async def _run_scan(session_factory) -> list[int]:
     _scan_state["source_errors"] = {s.name: str(r) or type(r).__name__
                                     for s, r in results if isinstance(r, BaseException)}
     profile = _load_profile()
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     # Sync SQLAlchemy on the event loop — deliberate: local SQLite, sub-ms queries.
     db = session_factory()
     try:

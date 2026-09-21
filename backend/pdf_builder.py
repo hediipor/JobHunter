@@ -103,12 +103,14 @@ def build_cv_pdf(profile: Dict, cv_data: Dict, output_path: Path) -> Path:
 
     # ── Experience ────────────────────────────────────────────────────────────
     story += _section("Experience", s)
-    for exp in profile.get("experience", []):
+    # key_achievements is one list drawn from the whole profile, so it replaces
+    # the first (most recent) role's bullets only — under every role it repeated.
+    tailored = cv_data.get("key_achievements")
+    for i, exp in enumerate(profile.get("experience", [])):
         story.append(Paragraph(
             f"<b>{exp.get('role', '')}</b> — {exp.get('company', '')}  "
             f"<font color='#888888'>{exp.get('period', '')}</font>", s["body"]))
-        achievements = cv_data.get("key_achievements") or exp.get("bullets", [])
-        for b in achievements[:6]:
+        for b in (tailored if i == 0 and tailored else exp.get("bullets", []))[:6]:
             story.append(Paragraph(f"• {b}", s["bullet"]))
         story.append(Spacer(1, 4))
 

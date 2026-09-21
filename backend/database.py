@@ -50,8 +50,8 @@ class Job(Base):
     match_reasons = Column(Text)     # JSON array
     status = Column(String, default="new")   # new | saved | applied | interview | offer | rejected
     is_applied = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    last_seen = Column(DateTime, default=datetime.datetime.utcnow, index=True)  # bumped every scan the URL still appears
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+    last_seen = Column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC), index=True)  # bumped every scan the URL still appears
 
     # ── LLM triage (nullable = not yet assessed) ─────────────────────────────
     ai_score = Column(Float)                      # realistic fit 0-100
@@ -109,7 +109,7 @@ class Application(Base):
     sent_at = Column(DateTime)
     response_status = Column(String, default="pending")   # pending | interview | offer | rejected
     notes = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
 
 
 def create_tables():

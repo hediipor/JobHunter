@@ -74,7 +74,7 @@ def send_digest_now(db: Session = Depends(get_db)):
     """Email the daily digest on demand — covers jobs added in the last 26h."""
     from digest import send_daily_digest
 
-    since = datetime.datetime.utcnow() - datetime.timedelta(hours=26)
+    since = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=26)
     ids = [i for (i,) in db.query(Job.id).filter(Job.created_at >= since).all()]
     if not send_daily_digest(db, ids):
         raise HTTPException(400, "Nothing to send (no recent jobs, or Gmail/digest disabled).")

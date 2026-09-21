@@ -37,6 +37,7 @@ export default function SetupPage() {
   const [showGemini, setShowGemini] = useState(false);
   const [geminiKey, setGeminiKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [openrouterKey, setOpenrouterKey] = useState("");
   const [rapidapiKey, setRapidapiKey] = useState("");
   const [gmailFrom, setGmailFrom] = useState("");
   const [gmailPassword, setGmailPassword] = useState("");
@@ -92,6 +93,7 @@ export default function SetupPage() {
     const body: Record<string, string> = {};
     if (geminiKey.trim()) body.gemini_api_key = geminiKey.trim();
     if (groqKey.trim()) body.groq_api_key = groqKey.trim();
+    if (openrouterKey.trim()) body.openrouter_api_key = openrouterKey.trim();
     if (rapidapiKey.trim()) body.rapidapi_key = rapidapiKey.trim();
     if (gmailFrom.trim()) body.gmail_from = gmailFrom.trim();
     if (gmailPassword.trim()) body.gmail_app_password = gmailPassword.trim();
@@ -203,6 +205,15 @@ export default function SetupPage() {
             onChange={e => setGroqKey(e.target.value)}
             placeholder="gsk_..."
             hint="Runs the high-volume job triage so Gemini's small free quota is saved for CVs and cover letters. Free at console.groq.com/keys. Either key alone works."
+          />
+
+          <Field
+            label="OpenRouter API key (optional)"
+            type="password"
+            value={openrouterKey}
+            onChange={e => setOpenrouterKey(e.target.value)}
+            placeholder="sk-or-..."
+            hint="Last-resort fallback when Groq and Gemini are out of quota. Free models at openrouter.ai/keys."
           />
 
           <Field

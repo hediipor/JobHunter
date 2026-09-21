@@ -87,7 +87,7 @@ def test_one_score_across_list_stats_and_digest():
     from routes.stats import get_stats
 
     db = _memory_db()()
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     db.add_all([
         Job(url="https://x/assessed", title="Assessed", company="C", last_seen=now,
             match_score=72.0, ai_score=68.0, ai_verdict="ok"),

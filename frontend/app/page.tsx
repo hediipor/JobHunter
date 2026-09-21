@@ -14,6 +14,10 @@ interface ScanStatus {
   source_errors: Record<string, string>;
 }
 
+interface TriageStatus {
+  running: boolean; triaged: number | null; failed: number | null; skipped: number | null; error: string | null;
+}
+
 const SOURCE_LABELS: Record<string, string> = { jsearch: "JSearch", keejob: "Keejob" };
 
 const kTokens = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
@@ -26,6 +30,8 @@ export default function Dashboard() {
     queryKey: ["stats"],
     queryFn: () => api.get("/stats/"),
   });
+
+  const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => api.get("/profile/") });
 
   const { data: topJobs } = useQuery<Job[]>({
     queryKey: ["top-jobs"],
@@ -114,11 +120,46 @@ export default function Dashboard() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const [triageWatching, setTriageWatching] = useState(false);
   const triageMutation = useMutation({
     mutationFn: () => api.post("/jobs/triage-pending"),
-    onSuccess: (d: any) => toast.success(d?.message || "🤖 Assessing jobs…", { duration: 6000 }),
+    onSuccess: async (d: any) => {
+      toast(d?.message || "🤖 Assessing jobs…", { duration: 6000 });
+      // refresh first, or the cached running:false from page load reads as "already done"
+      if (d?.started) {
+        await qc.invalidateQueries({ queryKey: ["triage-status"] });
+        setTriageWatching(true);
+      }
+    },
     onError: (e: Error) => toast.error(`AI check failed: ${e.message}`),
   });
+
+  // Same idea as the scan poll: end "Run AI Check" in a visible result.
+  const { data: triageStatus } = useQuery<TriageStatus>({
+    queryKey: ["triage-status"],
+    queryFn: () => api.get("/jobs/triage-status"),
+    refetchInterval: triageWatching ? 3000 : false,
+  });
+
+  useEffect(() => {
+    if (!triageWatching || triageStatus?.running !== false) return;
+    setTriageWatching(false);
+    const { triaged, failed, skipped, error } = triageStatus;
+    const detail = error ? ` — ${error}` : "";
+    if (failed || skipped) {
+      const parts = [failed ? `${failed} failed` : "", skipped ? `${skipped} left pending (out of quota)` : ""];
+      toast.error(`AI check: ${triaged ?? 0} assessed, ${parts.filter(Boolean).join(", ")}${detail}`, { duration: 10000 });
+    } else if (error) {
+      toast.error(`AI check failed${detail}`, { duration: 10000 });
+    } else {
+      toast.success(`✅ AI check done — ${triaged ?? 0} job(s) assessed.`, { duration: 6000 });
+    }
+    qc.invalidateQueries({ queryKey: ["stats"] });
+    qc.invalidateQueries({ queryKey: ["settings"] });
+    qc.invalidateQueries({ queryKey: ["top-jobs"] });
+    qc.invalidateQueries({ queryKey: ["jobs"] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triageWatching, triageStatus]);
 
   const topJobsList = (topJobs || []).slice(0, 6);
 
@@ -128,7 +169,7 @@ export default function Dashboard() {
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h1 className="page-title">
-            Good morning, <span className="gradient-text">Hedi</span> 👋
+            Good morning, <span className="gradient-text">{profile?.name?.split(" ")[0] || "there"}</span> 👋
           </h1>
           <p className="page-subtitle">Here's your job hunt overview</p>
         </div>

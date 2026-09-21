@@ -4,6 +4,8 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Briefcase, FileCheck2, User, Settings, Zap, Wand2,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import api from "@/lib/api";
 import styles from "./Sidebar.module.css";
 
 const NAV = [
@@ -17,6 +19,8 @@ const NAV = [
 
 export default function Sidebar() {
   const path = usePathname();
+  // Shares the profile page's query. Before setup there's no profile (404) — don't retry.
+  const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => api.get("/profile/"), retry: false });
   return (
     <aside className={styles.sidebar}>
       <div className={styles.logo}>
@@ -38,10 +42,12 @@ export default function Sidebar() {
       </nav>
 
       <div className={styles.footer}>
-        <div className={styles.avatar}>HB</div>
+        <div className={styles.avatar}>
+          {(profile?.name || "?").split(/\s+/).map((w: string) => w[0]).slice(0, 2).join("").toUpperCase()}
+        </div>
         <div>
-          <div className={styles.avatarName}>Hedi Bou Maiza</div>
-          <div className={styles.avatarRole}>Software Engineer</div>
+          <div className={styles.avatarName}>{profile?.name || "Set up your profile"}</div>
+          <div className={styles.avatarRole}>{profile?.title || ""}</div>
         </div>
       </div>
     </aside>

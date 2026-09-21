@@ -2,6 +2,7 @@
 /jobs endpoints
 """
 import asyncio
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -173,8 +174,15 @@ def mark_applied(job_id: int, db: Session = Depends(get_db)):
         j.status = "applied"
         if not db.query(Application).filter(Application.job_id == job_id).first():
             db.add(Application(job_id=job_id, response_status="pending"))
-    elif j.status == "applied":
-        j.status = "new"
+    else:
+        if j.status == "applied":
+            j.status = "new"
+        # drop the bare tracker row from toggle-on — but never one with a CV,
+        # an email, a sent mail, a logged response or notes on it
+        app = db.query(Application).filter(Application.job_id == job_id).first()
+        if app and not (app.cv_path or app.cover_letter_path or app.email_body or app.email_sent
+                        or app.notes or app.response_status not in (None, "pending")):
+            db.delete(app)
 
     db.commit()
     return _job_out(j)
@@ -212,9 +220,10 @@ async def triage_one(job_id: int, db: Session = Depends(get_db)):
 async def _triage_pending(session_factory, limit: int):
     """Background task: triage fresh jobs that were never assessed."""
     from database import fresh_jobs
-    from scan_service import triage_jobs
+    from scan_service import _triage_state, triage_jobs
 
     db = session_factory()
+    t = {"triaged": None, "failed": None, "skipped": None, "error": None}
     try:
         with open(settings.profile_path, encoding="utf-8") as f:
             profile = json.load(f)
@@ -225,10 +234,14 @@ async def _triage_pending(session_factory, limit: int):
             .limit(limit)
             .all()
         )
-        await triage_jobs(db, pending, profile)
+        t = await triage_jobs(db, pending, profile)
         db.commit()
+    except Exception as exc:
+        t["error"] = str(exc)
+        raise
     finally:
         db.close()
+        _triage_state.update(t, running=False, finished_at=datetime.datetime.now(datetime.UTC).isoformat())
 
 
 @router.post("/triage-pending")
@@ -236,13 +249,24 @@ async def triage_pending(limit: int = 25, db: Session = Depends(get_db)):
     """Kick off AI triage for fresh jobs that haven't been assessed yet.
     Rate-limited per provider, so it runs in the background."""
     from database import SessionLocal, fresh_jobs
+    from scan_service import _triage_state
 
+    if _triage_state["running"]:
+        return {"started": False, "message": "An AI check is already running."}
     n = fresh_jobs(db).filter(Job.ai_assessed_at.is_(None)).count()
     if not n:
-        return {"message": "All fresh jobs already assessed."}
+        return {"started": False, "message": "All fresh jobs already assessed."}
     take = min(n, limit)
+    _triage_state.update(running=True, finished_at=None, triaged=None, failed=None, skipped=None, error=None)
     _spawn(_triage_pending(SessionLocal, limit))
-    return {"message": f"Assessing {take} of {n} pending job(s) in the background. Refresh to see results."}
+    return {"started": True, "message": f"Assessing {take} of {n} pending job(s) in the background."}
+
+
+@router.get("/triage-status")
+def triage_status():
+    """Poll after POST /triage-pending; running=false means the counts are final."""
+    from scan_service import get_triage_state
+    return get_triage_state()
 
 
 # ── POST /jobs/scan ───────────────────────────────────────────────────────────
@@ -323,7 +347,6 @@ class ApplyRequest(BaseModel):
 
 @router.post("/{job_id:int}/apply")
 def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db)):
-    import datetime
     from email_sender import send_application
 
     j = db.query(Job).filter(Job.id == job_id).first()
@@ -335,7 +358,10 @@ def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db))
         raise HTTPException(400, "Generate documents first before applying.")
 
     try:
+        with open(settings.profile_path, encoding="utf-8") as f:
+            applicant_name = json.load(f).get("name", "")
         send_application(
+            applicant_name=applicant_name,
             to_email=body.to_email,
             subject=app.email_subject,
             body=app.email_body,
@@ -346,7 +372,7 @@ def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db))
         raise HTTPException(500, f"Email failed: {exc}")
 
     app.email_sent = True
-    app.sent_at = datetime.datetime.utcnow()
+    app.sent_at = datetime.datetime.now(datetime.UTC)
     j.is_applied = True
     j.status = "applied"
     db.commit()

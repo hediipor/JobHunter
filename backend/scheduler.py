@@ -25,6 +25,9 @@ def run_scan():
     except Exception as exc:
         logger.error(f"❌ Scan failed: {exc}")
         return
+    if new_ids is None:
+        logger.info("⏰ Scheduled scan skipped — a scan is already running")
+        return
 
     db = SessionLocal()
     try:

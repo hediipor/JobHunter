@@ -36,6 +36,7 @@ def get_settings() -> Dict[str, Any]:
     cfg["keys"] = {
         "gemini": bool(settings.gemini_api_key),
         "groq": bool(settings.groq_api_key),
+        "openrouter": bool(settings.openrouter_api_key),
         "gmail": bool(settings.gmail_app_password),
         "rapidapi": bool(settings.rapidapi_key),
     }

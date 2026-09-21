@@ -21,9 +21,11 @@ def _open_browser(url: str) -> None:
 
 
 def main() -> None:
+    from config import settings
     from main import app  # backend/main.py's FastAPI() instance
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
+    settings.frontend_url = url  # the exe serves the UI itself, on whatever port was free
     threading.Thread(target=_open_browser, args=(url,), daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 

@@ -19,7 +19,7 @@ interface AppSettings {
   search_terms: string[];
   locations: string[];
   sources: Record<string, SourceSettings>;
-  keys: { gemini: boolean; groq: boolean; gmail: boolean; rapidapi: boolean };
+  keys: { gemini: boolean; groq: boolean; openrouter: boolean; gmail: boolean; rapidapi: boolean };
   gmail_from: string;
 }
 
@@ -180,6 +180,7 @@ export default function SettingsPage() {
           </div>
           <KeyStatus label="Gemini API key" ok={!!cfg?.keys.gemini} />
           <KeyStatus label="Groq API key" ok={!!cfg?.keys.groq} />
+          <KeyStatus label="OpenRouter API key" ok={!!cfg?.keys.openrouter} />
           <KeyStatus label="RapidAPI key (JSearch)" ok={!!cfg?.keys.rapidapi} />
           <KeyStatus label={`Gmail app password (${cfg?.gmail_from || "not set"})`} ok={!!cfg?.keys.gmail} />
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 10 }}>
