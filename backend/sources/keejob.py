@@ -6,7 +6,7 @@ from typing import Dict, List
 import httpx
 from bs4 import BeautifulSoup
 
-from sources.base import Source, advance, combos, take
+from sources.base import Source, SourceError, advance, combos, interleave, take
 
 logger = logging.getLogger("sources.keejob")
 
@@ -33,53 +33,55 @@ def _keejob_icon_text(card, icon_class: str) -> str:
 
 
 async def scrape_keejob(term: str) -> List[Dict]:
-    """Scrape keejob.com for Tunisian listings (Tailwind layout, <article> cards)."""
+    """Scrape keejob.com for Tunisian listings (Tailwind layout, <article> cards).
+    Raises on any failure, including a page with no parseable cards: these
+    terms always have listings, so zero cards means the HTML changed."""
     jobs: List[Dict] = []
     url = f"https://www.keejob.com/offres-emploi/?keywords={term.replace(' ', '+')}"
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(r.text, "lxml")
-        for card in soup.find_all("article")[:10]:
-            title_link = card.select_one("h2 a[href*='/offres-emploi/']")
-            if not title_link:
-                continue
-            href = title_link["href"]
-            title = title_link.get_text(strip=True)
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "lxml")
+    for card in soup.find_all("article")[:10]:
+        title_link = card.select_one("h2 a[href*='/offres-emploi/']")
+        if not title_link:
+            continue
+        href = title_link["href"]
+        title = title_link.get_text(strip=True)
 
-            company_el = card.select_one("h2 + p")
-            company = company_el.get_text(strip=True) if company_el else ""
+        company_el = card.select_one("h2 + p")
+        company = company_el.get_text(strip=True) if company_el else ""
 
-            location = _keejob_icon_text(card, "fa-map-marker-alt") or "Tunisia"
-            date_posted = _keejob_icon_text(card, "fa-clock")
+        location = _keejob_icon_text(card, "fa-map-marker-alt") or "Tunisia"
+        date_posted = _keejob_icon_text(card, "fa-clock")
 
-            salary_icon = card.select_one("i.fa-money-bill-wave")
-            salary = salary_icon.parent.get_text(strip=True) if salary_icon else ""
+        salary_icon = card.select_one("i.fa-money-bill-wave")
+        salary = salary_icon.parent.get_text(strip=True) if salary_icon else ""
 
-            contract_tags = [i.parent.get_text(strip=True) for i in card.select("i.fa-briefcase")]
-            if "stage" in title.lower():
-                job_type = "internship"
-            elif contract_tags == ["CDI"] or contract_tags == ["CDD"]:
-                job_type = "full-time"
-            else:
-                job_type = ""  # cards often list every contract type at once
+        contract_tags = [i.parent.get_text(strip=True) for i in card.select("i.fa-briefcase")]
+        if "stage" in title.lower():
+            job_type = "internship"
+        elif contract_tags == ["CDI"] or contract_tags == ["CDD"]:
+            job_type = "full-time"
+        else:
+            job_type = ""  # cards often list every contract type at once
 
-            desc_el = card.select_one("div.mb-3 p")
-            description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        desc_el = card.select_one("div.mb-3 p")
+        description = desc_el.get_text(" ", strip=True) if desc_el else ""
 
-            jobs.append({
-                "title": title,
-                "company": company,
-                "location": location,
-                "description": description,
-                "url": href if href.startswith("http") else f"https://www.keejob.com{href}",
-                "source": "keejob",
-                "job_type": job_type,
-                "date_posted": date_posted,
-                "salary": salary,
-            })
-    except Exception as exc:
-        logger.warning(f"[keejob] {term} → {exc}")
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": location,
+            "description": description,
+            "url": href if href.startswith("http") else f"https://www.keejob.com{href}",
+            "source": "keejob",
+            "job_type": job_type,
+            "date_posted": date_posted,
+            "salary": salary,
+        })
+    if not jobs:
+        raise ValueError("no job cards parsed (layout changed?)")
     return jobs
 
 
@@ -112,13 +114,18 @@ class KeejobSource(Source):
 
     async def fetch(self, terms: List[str], locations: List[str], budget: int) -> List[Dict]:
         plan = take(self.name, combos(KEEJOB_TERMS, [None]), self.queries)
-        batches = await asyncio.gather(*(scrape_keejob(term) for term, _ in plan))
+        results = await asyncio.gather(*(scrape_keejob(term) for term, _ in plan),
+                                       return_exceptions=True)
         advance(self.name, len(plan))
-        jobs: Dict[str, Dict] = {}
-        for batch in batches:
-            for job in batch:
-                jobs.setdefault(job["url"], job)
-        return list(jobs.values())[:budget]
+        batches = []
+        for (term, _), r in zip(plan, results):
+            if isinstance(r, Exception):
+                logger.warning(f"[keejob] {term} → {r}")
+            else:
+                batches.append(r)
+        if plan and not batches:
+            raise SourceError(f"every Keejob search failed (last: {results[-1]})")
+        return interleave(batches)[:budget]
 
     async def enrich(self, jobs: List[Dict], concurrency: int = 5) -> None:
         """

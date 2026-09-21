@@ -3,9 +3,10 @@ import asyncio
 
 import pytest
 
-from sources import base, budget_for, fetch_all
+from sources import base, budget_for, fetch_all, keejob
 from sources.base import Source, SourceError, combos
 from sources.jsearch import _country_code
+from sources.keejob import KEEJOB_TERMS, KeejobSource
 
 TERMS = ["Software Engineer", "Full Stack Developer", "Web Developer", "Flutter Developer",
          "React Developer", "Angular Developer", "Python Developer",
@@ -87,3 +88,33 @@ def test_country_code():
     assert _country_code("Toronto, Canada") == "ca"
     assert _country_code("Amsterdam, Netherlands") == "nl"
     assert _country_code("Atlantis") is None
+
+
+def fake_keejob(monkeypatch, failing=()):
+    async def scrape(term):
+        if term in failing:
+            raise ValueError("no job cards parsed")
+        return [{"url": f"https://keejob/{term}/{k}", "term": term} for k in range(10)]
+    monkeypatch.setattr(keejob, "scrape_keejob", scrape)
+
+
+def test_keejob_keeps_every_term_under_budget(monkeypatch):
+    # 6 terms × 10 cards cut to 25: merged in term order, the cut kept only the
+    # first 3 terms — "web", "mobile", "stage informatique" never got through
+    fake_keejob(monkeypatch)
+    jobs = asyncio.run(KeejobSource().fetch([], [], 25))
+    assert len(jobs) == 25
+    assert {j["term"] for j in jobs} == set(KEEJOB_TERMS)
+
+
+def test_keejob_every_term_failing_raises(monkeypatch):
+    fake_keejob(monkeypatch, failing=KEEJOB_TERMS)
+    with pytest.raises(SourceError):
+        asyncio.run(KeejobSource().fetch([], [], 25))
+
+
+def test_keejob_one_term_failing_is_skipped(monkeypatch):
+    fake_keejob(monkeypatch, failing={"web"})
+    jobs = asyncio.run(KeejobSource().fetch([], [], 100))
+    assert len(jobs) == 50
+    assert {j["term"] for j in jobs} == set(KEEJOB_TERMS) - {"web"}
