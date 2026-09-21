@@ -2,14 +2,23 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import api from "@/lib/api";
-import { Save, Key, Zap, Bell, Search, MapPin, CheckCircle2, XCircle } from "lucide-react";
+import { Save, Key, Zap, Bell, Search, MapPin, CheckCircle2, XCircle, Globe } from "lucide-react";
 import toast from "react-hot-toast";
+
+interface SourceSettings { enabled: boolean; queries: number }
+
+// What each source's "requests per scan" costs — shown under its toggle.
+const SOURCE_INFO: Record<string, { label: string; hint: string }> = {
+  jsearch: { label: "JSearch (LinkedIn, Indeed, Glassdoor…)", hint: "RapidAPI requests per scan — free tier is 200/month." },
+  keejob: { label: "Keejob (Tunisia)", hint: "Pages scraped per scan, using its own French search terms." },
+};
 
 interface AppSettings {
   scan_interval_hours: number;
   max_jobs_per_scan: number;
   search_terms: string[];
   locations: string[];
+  sources: Record<string, SourceSettings>;
   keys: { gemini: boolean; groq: boolean; gmail: boolean; rapidapi: boolean };
   gmail_from: string;
 }
@@ -37,6 +46,7 @@ export default function SettingsPage() {
   const [maxJobs, setMaxJobs] = useState("50");
   const [terms, setTerms] = useState("");
   const [locations, setLocations] = useState("");
+  const [sources, setSources] = useState<Record<string, SourceSettings>>({});
   const [loaded, setLoaded] = useState(false);
 
   const { data: cfg, isLoading } = useQuery<AppSettings>({
@@ -50,6 +60,7 @@ export default function SettingsPage() {
       setMaxJobs(String(cfg.max_jobs_per_scan));
       setTerms(cfg.search_terms.join("\n"));
       setLocations(cfg.locations.join("\n"));
+      setSources(cfg.sources);
       setLoaded(true);
     }
   }, [cfg, loaded]);
@@ -74,11 +85,20 @@ export default function SettingsPage() {
       toast.error("Max jobs per scan must be between 1 and 200.");
       return;
     }
+    if (!Object.values(sources).some(s => s.enabled)) {
+      toast.error("Enable at least one job source.");
+      return;
+    }
+    if (Object.values(sources).some(s => !Number.isInteger(s.queries) || s.queries < 1 || s.queries > 50)) {
+      toast.error("Requests per scan must be between 1 and 50.");
+      return;
+    }
     saveMutation.mutate({
       scan_interval_hours: hours,
       max_jobs_per_scan: jobs,
       search_terms: terms.split("\n").map(t => t.trim()).filter(Boolean),
       locations: locations.split("\n").map(l => l.trim()).filter(Boolean),
+      sources,
     });
   };
 
@@ -111,7 +131,7 @@ export default function SettingsPage() {
               <input type="number" min={1} max={168} className="input" value={interval}
                 onChange={e => setIntervalHours(e.target.value)} />
               <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 6 }}>
-                Each scan uses up to 10 JSearch API requests (free tier: 200/month) — use a 48h+ interval on the free plan.
+                Each scan uses up to {sources.jsearch?.queries ?? 10} JSearch API requests (free tier: 200/month) — at 10 per scan, use a 48h+ interval on the free plan.
               </p>
             </div>
             <div>
@@ -120,7 +140,35 @@ export default function SettingsPage() {
               </label>
               <input type="number" min={1} max={200} className="input" value={maxJobs}
                 onChange={e => setMaxJobs(e.target.value)} />
+              <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 6 }}>
+                Split evenly between the enabled sources. Every new job gets an AI check, so this is also the scan&apos;s AI budget.
+              </p>
             </div>
+          </div>
+        </div>
+
+        {/* Job sources */}
+        <div className="card">
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <Globe size={18} color="var(--accent)" />
+            <h3 style={{ fontSize: 16, fontWeight: 700 }}>Job Sources</h3>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {Object.entries(sources).map(([name, s]) => (
+              <div key={name}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 600 }}>
+                  <input type="checkbox" checked={s.enabled}
+                    onChange={e => setSources({ ...sources, [name]: { ...s, enabled: e.target.checked } })} />
+                  {SOURCE_INFO[name]?.label ?? name}
+                </label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, marginLeft: 24 }}>
+                  <input type="number" min={1} max={50} className="input" style={{ width: 90 }}
+                    aria-label={`${name} requests per scan`} value={Number.isNaN(s.queries) ? "" : s.queries} disabled={!s.enabled}
+                    onChange={e => setSources({ ...sources, [name]: { ...s, queries: parseInt(e.target.value, 10) } })} />
+                  <span style={{ fontSize: 12, color: "var(--text2)" }}>{SOURCE_INFO[name]?.hint ?? "Requests per scan."}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -154,7 +202,7 @@ export default function SettingsPage() {
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>Search Terms</h3>
           </div>
           <p style={{ fontSize: 13, color: "var(--text2)", marginBottom: 10 }}>
-            One per line. The first term is queried across every location; the second term fills any remaining request budget.
+            One per line. Every term is used: each scan picks up the term × location pairs where the last one stopped.
           </p>
           <textarea className="input" value={terms} onChange={e => setTerms(e.target.value)}
             spellCheck={false}
@@ -168,7 +216,7 @@ export default function SettingsPage() {
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>Locations</h3>
           </div>
           <p style={{ fontSize: 13, color: "var(--text2)", marginBottom: 10 }}>
-            One per line. Country name, “City, Country”, or “Remote”. First {10} are queried per scan. Keejob covers Tunisia separately.
+            One per line. Country name, “City, Country”, or “Remote”. Keejob covers Tunisia separately.
           </p>
           <textarea className="input" value={locations} onChange={e => setLocations(e.target.value)}
             spellCheck={false}

@@ -1,6 +1,6 @@
 """
-Shared scan pipeline: scrape → skip known URLs → enrich Keejob details →
-score → persist. Used by both the APScheduler job and the /jobs/scan route.
+Shared scan pipeline: fetch from every enabled source → skip known URLs →
+let each source enrich its new jobs → score → persist → triage. Used by both the APScheduler job and the /jobs/scan route.
 """
 import asyncio
 import datetime
@@ -12,7 +12,7 @@ from ai_generator import TRIAGE_VERSION, TriageParseError, triage_batch, triage_
 from config import settings
 from database import Job
 from matcher import calculate_match
-from scraper import enrich_keejob_details, scrape_all
+from sources import enabled_sources, fetch_all
 
 logger = logging.getLogger("scan")
 
@@ -22,7 +22,8 @@ logger = logging.getLogger("scan")
 # ponytail: single-process in-memory state — fine for one local user, would
 # need a shared store (DB row, Redis) behind more than one uvicorn worker.
 _scan_state: dict = {"running": False, "started_at": None, "finished_at": None, "added": None, "error": None,
-                     "triaged": None, "failed": None, "skipped": None, "triage_error": None}
+                     "triaged": None, "failed": None, "skipped": None, "triage_error": None,
+                     "source_errors": {}}
 
 
 def get_scan_state() -> dict:
@@ -105,11 +106,10 @@ async def triage_jobs(db, jobs: list[Job], profile: dict) -> dict:
 
 async def scan_and_store(session_factory) -> list[int]:
     """Run a full scan, persist + triage new jobs. Returns the new job ids."""
-    from user_settings import load as load_user_settings
-
     _scan_state.update(running=True, started_at=datetime.datetime.utcnow().isoformat(),
                         finished_at=None, added=None, error=None,
-                        triaged=None, failed=None, skipped=None, triage_error=None)
+                        triaged=None, failed=None, skipped=None, triage_error=None,
+                        source_errors={})
     try:
         ids = await _run_scan(session_factory)
         _scan_state.update(running=False, finished_at=datetime.datetime.utcnow().isoformat(), added=len(ids))
@@ -123,29 +123,41 @@ async def _run_scan(session_factory) -> list[int]:
     from user_settings import load as load_user_settings
 
     cfg = load_user_settings()
-    jobs = await scrape_all(
-        search_terms=cfg["search_terms"],
-        locations=cfg["locations"],
-        max_jobs=cfg["max_jobs_per_scan"],
-    )
+    sources = enabled_sources(cfg)
+    if not sources:
+        raise RuntimeError("every job source is disabled in Settings")
+    results = await fetch_all(sources, cfg["search_terms"], cfg["locations"], cfg["max_jobs_per_scan"])
+    # "JSearch failed: 403 — …" for the dashboard, instead of just fewer jobs
+    _scan_state["source_errors"] = {s.name: str(r) or type(r).__name__
+                                    for s, r in results if isinstance(r, BaseException)}
     profile = _load_profile()
     now = datetime.datetime.utcnow()
     # Sync SQLAlchemy on the event loop — deliberate: local SQLite, sub-ms queries.
     db = session_factory()
     try:
-        new_jobs = []
-        for job_data in jobs:
-            url = job_data.get("url", "")
-            if not url:
+        new_jobs, seen = [], set()
+        for source, jobs in results:
+            if isinstance(jobs, BaseException):
                 continue
-            existing = db.query(Job).filter(Job.url == url).first()
-            if existing:
-                existing.last_seen = now  # still listed → keep it fresh
-                continue
-            new_jobs.append(job_data)
-
-        # Only new jobs get the extra per-job detail fetch
-        await enrich_keejob_details(new_jobs)
+            fresh = []
+            for job_data in jobs:
+                url = job_data.get("url", "")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                existing = db.query(Job).filter(Job.url == url).first()
+                if existing:
+                    existing.last_seen = now  # still listed → keep it fresh
+                    continue
+                fresh.append(job_data)
+            # Only new jobs get the source's extra per-job fetch. A failed
+            # enrich still keeps the jobs, with their snippet descriptions.
+            try:
+                await source.enrich(fresh)
+            except Exception as exc:
+                logger.warning(f"[{source.name}] enrich failed: {exc}")
+                _scan_state["source_errors"][source.name] = f"enrich: {exc}"
+            new_jobs += fresh
 
         rows = []
         for job_data in new_jobs:

@@ -18,6 +18,7 @@ from conftest import fake_providers, resp
 from database import Base, Job
 from digest import build_digest, render_digest
 from scan_service import _apply_triage, triage_jobs
+from sources.base import Source
 
 
 def _job(**kw):
@@ -259,15 +260,15 @@ def test_scan_and_single_triage_share_one_loop(monkeypatch, tmp_path):
     profile.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(jobs_route, "settings", SimpleNamespace(profile_path=profile))
     monkeypatch.setattr(scan_service, "_load_profile", lambda: {})
-    monkeypatch.setattr(user_settings, "load", lambda: {"search_terms": [], "locations": [], "max_jobs_per_scan": 5})
+    monkeypatch.setattr(user_settings, "load", lambda: {"search_terms": ["t"], "locations": ["l"],
+                                                        "max_jobs_per_scan": 12, "sources": {}})
 
-    async def fake_scrape(**_):
-        return [dict(title=f"T{i}", company="C", location="L", url=f"https://x/{i}") for i in range(12)]
+    class Fake(Source):
+        name = "fake"
 
-    async def noop(_jobs):
-        pass
-    monkeypatch.setattr(scan_service, "scrape_all", fake_scrape)
-    monkeypatch.setattr(scan_service, "enrich_keejob_details", noop)
+        async def fetch(self, terms, locations, budget):
+            return [dict(title=f"T{i}", company="C", location="L", url=f"https://x/{i}") for i in range(budget)]
+    monkeypatch.setattr(scan_service, "enabled_sources", lambda cfg: [Fake()])
 
     factory = _memory_db()
     db = factory()

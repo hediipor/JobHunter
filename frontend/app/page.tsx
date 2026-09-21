@@ -11,7 +11,10 @@ import toast from "react-hot-toast";
 interface ScanStatus {
   running: boolean; added: number | null; error: string | null;
   triaged: number | null; failed: number | null; skipped: number | null; triage_error: string | null;
+  source_errors: Record<string, string>;
 }
+
+const SOURCE_LABELS: Record<string, string> = { jsearch: "JSearch", keejob: "Keejob" };
 
 const kTokens = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 
@@ -63,7 +66,11 @@ export default function Dashboard() {
   useEffect(() => {
     if (!watching || scanStatus?.running !== false) return;
     setWatching(false);
-    const { error, added, triaged, failed, skipped, triage_error } = scanStatus;
+    const { error, added, triaged, failed, skipped, triage_error, source_errors } = scanStatus;
+    // One source failing doesn't fail the scan — say which one, and why
+    for (const [name, msg] of Object.entries(source_errors || {})) {
+      toast.error(`${SOURCE_LABELS[name] ?? name} failed: ${msg}`, { duration: 10000 });
+    }
     if (error) {
       toast.error(`Scan failed: ${error}`);
     } else if (!added) {
