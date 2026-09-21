@@ -1,4 +1,6 @@
 import datetime
+import hashlib
+import re
 from pathlib import Path
 
 from sqlalchemy import (
@@ -29,7 +31,16 @@ class Job(Base):
     company = Column(String)
     location = Column(String)
     description = Column(Text)
+    # url stays UNIQUE. Two sources can legally hand us the same apply link,
+    # but the scan matches on url before content_key and never inserts a url
+    # it has already seen (in the DB or earlier in the batch) — the second
+    # sighting lands in also_seen, so the constraint is a backstop that can't
+    # fire mid-scan. Dropping it would also need a full SQLite table rebuild.
     url = Column(String, unique=True)
+    # Cross-source identity: sha1 of normalized title|company|country.
+    # Indexed, not unique — rows stored before dedup may already share a key.
+    content_key = Column(String, index=True)
+    also_seen = Column(Text, default="[]")  # JSON [[source, url], ...] of duplicate sightings
     source = Column(String)          # linkedin | indeed | glassdoor | keejob | ...
     job_type = Column(String)        # full-time | internship | remote
     date_posted = Column(String)
@@ -57,6 +68,30 @@ class Job(Base):
         None/NULL = pending AI check; never falls back to match_score.
         Works on a row (j.fit_score) and in SQL (Job.fit_score)."""
         return self.ai_score
+
+
+# Trailing noise aggregators bolt onto the same title: "(m/f/d)", "(all genders)",
+# "- Remote", "| Hybrid". Stripped repeatedly, so "X (m/w/d) - Remote" → "x".
+_TITLE_SUFFIX = re.compile(
+    r"\s*(?:[(\[]\s*(?:[mfwhdx]\s*/\s*)+[mfwhdx]\s*[)\]]"
+    r"|[(\[]\s*all genders\s*[)\]]"
+    r"|[-–—|,:/]?\s*[(\[]?\s*(?:remote|hybrid|on-?site)\s*[)\]]?)\s*$"
+)
+
+
+def _norm(s: str) -> str:
+    return " ".join((s or "").casefold().split())
+
+
+def content_key(title: str, company: str, location: str) -> str:
+    """Same posting, any source. Country = last comma part of location, so
+    "Barcelona, Spain" and "Spain" match; "Tunis" vs "Tunis, Tunisia" won't
+    (a missed merge, never a wrong one)."""
+    t = _norm(title)
+    while (stripped := _TITLE_SUFFIX.sub("", t)) != t:
+        t = stripped
+    country = _norm((location or "").rsplit(",", 1)[-1])
+    return hashlib.sha1(f"{t}|{_norm(company)}|{country}".encode()).hexdigest()
 
 
 class Application(Base):
@@ -95,6 +130,18 @@ def create_tables():
         ]:
             if col not in cols:
                 conn.exec_driver_sql(f"ALTER TABLE jobs ADD COLUMN {ddl}")
+        if "content_key" not in cols:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN content_key VARCHAR")
+        if "also_seen" not in cols:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN also_seen TEXT DEFAULT '[]'")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_content_key ON jobs (content_key)")
+        # Backfill. Existing duplicates keep their own rows (they may carry
+        # applications); new sightings just merge into whichever comes first.
+        todo = conn.exec_driver_sql(
+            "SELECT id, title, company, location FROM jobs WHERE content_key IS NULL").fetchall()
+        for id_, title, company, location in todo:
+            conn.exec_driver_sql("UPDATE jobs SET content_key = ? WHERE id = ?",
+                                 (content_key(title, company, location), id_))
 
 
 def get_db():

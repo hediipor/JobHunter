@@ -7,10 +7,12 @@ import datetime
 import json
 import logging
 
+from sqlalchemy import or_
+
 import llm
 from ai_generator import TRIAGE_VERSION, TriageParseError, triage_batch, triage_batches
 from config import settings
-from database import Job
+from database import Job, content_key
 from matcher import calculate_match
 from sources import enabled_sources, fetch_all
 
@@ -104,6 +106,43 @@ async def triage_jobs(db, jobs: list[Job], profile: dict) -> dict:
     return stats
 
 
+def _add_seen(pairs: list, source: str, url: str) -> None:
+    if [source, url] not in pairs:
+        pairs.append([source, url])
+
+
+def dedup(db, source_name: str, jobs: list[dict], pending: dict, now) -> list[dict]:
+    """Return the jobs never seen before, stamped with content_key/also_seen.
+    A repeat — same url or same content_key, whether stored or earlier in this
+    scan (`pending`, shared across sources) — is recorded on the first sighting
+    instead: stored rows get last_seen bumped, and a different (source, url)
+    pair is appended to also_seen."""
+    fresh = []
+    for jd in jobs:
+        url = jd.get("url", "")
+        if not url:
+            continue
+        src = jd.get("source") or source_name
+        key = content_key(jd.get("title", ""), jd.get("company", ""), jd.get("location", ""))
+        first = pending.get(url) or pending.get(key)
+        if first is not None:
+            if [src, url] != [first["source"], first["url"]]:
+                _add_seen(first["also_seen"], src, url)
+            continue
+        row = db.query(Job).filter(or_(Job.url == url, Job.content_key == key)).first()
+        if row:
+            row.last_seen = now  # still listed → keep it fresh
+            if [src, url] != [row.source, row.url]:
+                pairs = json.loads(row.also_seen or "[]")
+                _add_seen(pairs, src, url)
+                row.also_seen = json.dumps(pairs)
+            continue
+        jd.update(source=src, content_key=key, also_seen=[])
+        pending[url] = pending[key] = jd
+        fresh.append(jd)
+    return fresh
+
+
 async def scan_and_store(session_factory) -> list[int]:
     """Run a full scan, persist + triage new jobs. Returns the new job ids."""
     _scan_state.update(running=True, started_at=datetime.datetime.utcnow().isoformat(),
@@ -135,21 +174,11 @@ async def _run_scan(session_factory) -> list[int]:
     # Sync SQLAlchemy on the event loop — deliberate: local SQLite, sub-ms queries.
     db = session_factory()
     try:
-        new_jobs, seen = [], set()
+        new_jobs, pending = [], {}
         for source, jobs in results:
             if isinstance(jobs, BaseException):
                 continue
-            fresh = []
-            for job_data in jobs:
-                url = job_data.get("url", "")
-                if not url or url in seen:
-                    continue
-                seen.add(url)
-                existing = db.query(Job).filter(Job.url == url).first()
-                if existing:
-                    existing.last_seen = now  # still listed → keep it fresh
-                    continue
-                fresh.append(job_data)
+            fresh = dedup(db, source.name, jobs, pending, now)
             # Only new jobs get the source's extra per-job fetch. A failed
             # enrich still keeps the jobs, with their snippet descriptions.
             try:
@@ -169,6 +198,8 @@ async def _run_scan(session_factory) -> list[int]:
                 location=_clean(job_data["location"]),
                 description=_clean(job_data.get("description", "")),
                 url=job_data["url"],
+                content_key=job_data["content_key"],
+                also_seen=json.dumps(job_data["also_seen"]),
                 source=_clean(job_data.get("source", "")),
                 job_type=_clean(job_data.get("job_type", "")),
                 date_posted=_clean(job_data.get("date_posted", "")),
