@@ -89,6 +89,18 @@ function JobDetailContent() {
                   <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Building2 size={14} />{job.company}</span>
                   <span style={{ display: "flex", alignItems: "center", gap: 5 }}><MapPin size={14} />{job.location}</span>
                 </div>
+                {(job.also_seen ?? []).length > 0 && (
+                  <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 6 }}>
+                    Also listed on:{" "}
+                    {job.also_seen!.map((s, i) => (
+                      <span key={s.url}>
+                        {i > 0 && ", "}
+                        <a href={s.url} target="_blank" rel="noopener noreferrer"
+                          style={{ color: "var(--accent2)", textTransform: "capitalize" }}>{s.source} ↗</a>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               {/* Big score ring */}
               <div style={{ position: "relative", width: 88, height: 88, flexShrink: 0 }}>

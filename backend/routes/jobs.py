@@ -58,6 +58,7 @@ class JobOut(BaseModel):
     ai_verdict: str = ""
     sponsorship: str = ""
     dealbreakers: List[str] = []
+    also_seen: List[dict] = []          # [{source, url}] — same posting on other boards
 
     class Config:
         from_attributes = True
@@ -96,6 +97,7 @@ def _job_out(j: Job) -> dict:
         "ai_verdict": j.ai_verdict or "",
         "sponsorship": j.sponsorship or "",
         "dealbreakers": _json_list(j.dealbreakers),
+        "also_seen": [{"source": p[0], "url": p[1]} for p in _json_list(j.also_seen) if len(p) == 2],
         "description": j.description or "",
     }
 

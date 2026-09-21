@@ -18,6 +18,7 @@ export interface Job {
   ai_verdict?: string;
   sponsorship?: string;   // yes | likely | unclear | no
   dealbreakers?: string[];
+  also_seen?: { source: string; url: string }[];  // same posting on other boards
   description?: string;
 }
 

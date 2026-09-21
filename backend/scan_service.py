@@ -7,7 +7,7 @@ import datetime
 import json
 import logging
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 import llm
 from ai_generator import TRIAGE_VERSION, TriageParseError, triage_batch, triage_batches
@@ -113,23 +113,31 @@ def _add_seen(pairs: list, source: str, url: str) -> None:
 
 def dedup(db, source_name: str, jobs: list[dict], pending: dict, now) -> list[dict]:
     """Return the jobs never seen before, stamped with content_key/also_seen.
-    A repeat — same url or same content_key, whether stored or earlier in this
+    A repeat — same url, or same content_key from a DIFFERENT source (one board
+    listing two urls means two postings), whether stored or earlier in this
     scan (`pending`, shared across sources) — is recorded on the first sighting
     instead: stored rows get last_seen bumped, and a different (source, url)
-    pair is appended to also_seen."""
+    pair is appended to also_seen. No company → url matching only."""
     fresh = []
     for jd in jobs:
         url = jd.get("url", "")
         if not url:
             continue
         src = jd.get("source") or source_name
-        key = content_key(jd.get("title", ""), jd.get("company", ""), jd.get("location", ""))
-        first = pending.get(url) or pending.get(key)
+        company = jd.get("company", "")
+        key = content_key(jd.get("title", ""), company, jd.get("location", ""))
+        by_key = bool(company.strip())
+        first = pending.get(url)
+        if first is None and by_key:
+            first = next((j for j in pending.get(("key", key), []) if j["source"] != src), None)
         if first is not None:
             if [src, url] != [first["source"], first["url"]]:
                 _add_seen(first["also_seen"], src, url)
             continue
-        row = db.query(Job).filter(or_(Job.url == url, Job.content_key == key)).first()
+        match = Job.url == url
+        if by_key:
+            match = or_(match, and_(Job.content_key == key, Job.source.is_distinct_from(src)))
+        row = db.query(Job).filter(match).first()
         if row:
             row.last_seen = now  # still listed → keep it fresh
             if [src, url] != [row.source, row.url]:
@@ -138,7 +146,8 @@ def dedup(db, source_name: str, jobs: list[dict], pending: dict, now) -> list[di
                 row.also_seen = json.dumps(pairs)
             continue
         jd.update(source=src, content_key=key, also_seen=[])
-        pending[url] = pending[key] = jd
+        pending[url] = jd
+        pending.setdefault(("key", key), []).append(jd)
         fresh.append(jd)
     return fresh
 

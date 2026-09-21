@@ -77,3 +77,61 @@ def test_create_tables_backfills_content_key(monkeypatch):
     with eng.connect() as c:
         key, seen = c.execute(text("SELECT content_key, also_seen FROM jobs")).one()
     assert key == content_key("Dev", "Acme", "Spain") and seen == "[]"
+
+
+def _scan(monkeypatch, factory, *sources):
+    monkeypatch.setattr(scan_service, "_load_profile", lambda: {})
+    monkeypatch.setattr(user_settings, "load", lambda: {"search_terms": ["t"], "locations": ["l"],
+                                                        "max_jobs_per_scan": 10, "sources": {}})
+    monkeypatch.setattr(scan_service, "enabled_sources", lambda cfg: list(sources))
+
+    async def no_triage(db, rows, profile):
+        return {"triaged": 0, "failed": 0, "skipped": 0, "error": None}
+    monkeypatch.setattr(scan_service, "triage_jobs", no_triage)
+    return asyncio.run(scan_service.scan_and_store(factory))
+
+
+def _two_from_one_source(a, b):
+    class S(Source):
+        name = "board"
+        async def fetch(self, terms, locations, budget):
+            return [dict(a), dict(b)]
+    return S()
+
+
+def test_same_source_two_urls_two_rows(monkeypatch):
+    a = dict(title="Dev", company="Acme", location="Antony, France", url="https://b/1")
+    b = dict(title="Dev", company="Acme", location="Champigny, France", url="https://b/2")
+    factory = _memory_db()
+    _scan(monkeypatch, factory, _two_from_one_source(a, b))
+    assert factory().query(Job).count() == 2
+    _scan(monkeypatch, factory, _two_from_one_source(a, b))  # and stays 2 on rescan
+    assert factory().query(Job).count() == 2
+
+
+def test_country_names_and_codes_share_a_key():
+    assert content_key("Dev", "Acme", "Paris, FR") == content_key("Dev", "Acme", "Paris, France")
+    assert content_key("Dev", "Acme", "Paris, fr") == content_key("Dev", "Acme", "france")
+    assert content_key("Dev", "Acme", "Atlantis") != content_key("Dev", "Acme", "Paris, FR")
+
+
+def test_empty_company_no_content_merge(monkeypatch):
+    a = dict(title="Dev", company="", location="Paris, FR", url="https://x/1", source="x")
+    b = dict(title="Dev", company="", location="Paris, FR", url="https://y/1", source="y")
+    factory = _memory_db()
+    _scan(monkeypatch, factory, _source("x", a), _source("y", b))
+    assert factory().query(Job).count() == 2
+
+
+def test_create_tables_recomputes_old_keys(monkeypatch):
+    eng = create_engine("sqlite://", poolclass=StaticPool)
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE jobs (id INTEGER PRIMARY KEY, title VARCHAR, company VARCHAR,"
+                       " location VARCHAR, url VARCHAR UNIQUE, created_at DATETIME,"
+                       " content_key VARCHAR, also_seen TEXT DEFAULT '[]')"))
+        c.execute(text("INSERT INTO jobs (title, company, location, url, content_key)"
+                       " VALUES ('Dev', 'Acme', 'Paris, France', 'u', 'old-formula-key')"))
+    monkeypatch.setattr(database, "engine", eng)
+    database.create_tables()
+    with eng.connect() as c:
+        assert c.execute(text("SELECT content_key FROM jobs")).scalar() == content_key("Dev", "Acme", "Paris, FR")

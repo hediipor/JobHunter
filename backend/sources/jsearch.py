@@ -6,6 +6,7 @@ from typing import Dict, List
 import httpx
 
 from config import settings
+from countries import COUNTRY_CODES as _COUNTRY_CODES
 from sources.base import Source, SourceError, advance, combos, take
 
 logger = logging.getLogger("sources.jsearch")
@@ -22,27 +23,6 @@ MAX_JSEARCH_QUERIES_PER_SCAN = 10
 # soft-throttled (empty results instead of 429)
 JSEARCH_DELAY_SECONDS = 3
 
-# ISO country codes for the JSearch `country` param
-_COUNTRY_CODES = {
-    "tunisia": "tn",
-    "france": "fr",
-    "germany": "de",
-    "united kingdom": "gb",
-    "uk": "gb",
-    "canada": "ca",
-    "united states": "us",
-    "usa": "us",
-    "spain": "es",
-    "netherlands": "nl",
-    "ireland": "ie",
-    "portugal": "pt",
-    "belgium": "be",
-    "switzerland": "ch",
-    "italy": "it",
-    "austria": "at",
-    "sweden": "se",
-    "poland": "pl",
-}
 
 
 def _country_code(location: str) -> str | None:

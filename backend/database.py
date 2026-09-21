@@ -11,6 +11,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config import settings
+from countries import COUNTRY_CODES
 
 engine = create_engine(
     settings.database_url,
@@ -84,13 +85,14 @@ def _norm(s: str) -> str:
 
 
 def content_key(title: str, company: str, location: str) -> str:
-    """Same posting, any source. Country = last comma part of location, so
-    "Barcelona, Spain" and "Spain" match; "Tunis" vs "Tunis, Tunisia" won't
-    (a missed merge, never a wrong one)."""
+    """Same posting, any source. Country = last comma part of location, as an
+    ISO code when known: "Paris, FR", "Paris, France" and "France" all match.
+    Callers must not merge on this within one source (multi-city postings)."""
     t = _norm(title)
     while (stripped := _TITLE_SUFFIX.sub("", t)) != t:
         t = stripped
     country = _norm((location or "").rsplit(",", 1)[-1])
+    country = COUNTRY_CODES.get(country, country)
     return hashlib.sha1(f"{t}|{_norm(company)}|{country}".encode()).hexdigest()
 
 
@@ -135,10 +137,10 @@ def create_tables():
         if "also_seen" not in cols:
             conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN also_seen TEXT DEFAULT '[]'")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_content_key ON jobs (content_key)")
-        # Backfill. Existing duplicates keep their own rows (they may carry
-        # applications); new sightings just merge into whichever comes first.
-        todo = conn.exec_driver_sql(
-            "SELECT id, title, company, location FROM jobs WHERE content_key IS NULL").fetchall()
+        # Recompute every key: the formula has changed before and old-formula
+        # keys would never match new sightings. Existing duplicates keep their
+        # own rows (they may carry applications).
+        todo = conn.exec_driver_sql("SELECT id, title, company, location FROM jobs").fetchall()
         for id_, title, company, location in todo:
             conn.exec_driver_sql("UPDATE jobs SET content_key = ? WHERE id = ?",
                                  (content_key(title, company, location), id_))
