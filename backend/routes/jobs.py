@@ -15,7 +15,10 @@ from sqlalchemy.orm import Session
 import llm
 from config import settings
 from database import Application, Job, fresh_jobs, get_db
-from ai_generator import generate_cv_data, generate_cover_letter, generate_email
+from ai_generator import (
+    generate_cv_data, generate_cover_letter, generate_email,
+    interview_questions, interview_feedback, InterviewParseError,
+)
 from pdf_builder import build_cv_pdf, build_cover_letter_pdf
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -364,6 +367,55 @@ async def generate_documents(job_id: int, db: Session = Depends(get_db)):
         "email_preview": body[:500],
         "cv_summary": cv_data.get("summary", ""),
     }
+
+
+# ── POST /jobs/{id}/interview ─────────────────────────────────────────────────
+
+@router.post("/{job_id:int}/interview")
+async def interview(job_id: int, db: Session = Depends(get_db)):
+    """5 role-specific mock-interview questions. Not persisted."""
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    with open(settings.profile_path, encoding="utf-8") as f:
+        profile = json.load(f)
+
+    try:
+        questions = await interview_questions(profile, _job_out(j))
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except (llm.LLMError, InterviewParseError) as exc:
+        raise HTTPException(502, f"AI interview failed: {exc}")
+    return {"questions": questions}
+
+
+# ── POST /jobs/{id}/interview/feedback ────────────────────────────────────────
+
+class InterviewAnswer(BaseModel):
+    question: str
+    answer: str
+
+class InterviewFeedbackRequest(BaseModel):
+    answers: List[InterviewAnswer]
+
+@router.post("/{job_id:int}/interview/feedback")
+async def interview_feedback_route(job_id: int, body: InterviewFeedbackRequest, db: Session = Depends(get_db)):
+    if not body.answers:
+        raise HTTPException(422, "At least one answer is required.")
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    with open(settings.profile_path, encoding="utf-8") as f:
+        profile = json.load(f)
+
+    qa = [a.model_dump() for a in body.answers]
+    try:
+        feedback = await interview_feedback(profile, _job_out(j), qa)
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except (llm.LLMError, InterviewParseError) as exc:
+        raise HTTPException(502, f"AI feedback failed: {exc}")
+    return {"feedback": feedback}
 
 
 # ── POST /jobs/{id}/apply ─────────────────────────────────────────────────────

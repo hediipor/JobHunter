@@ -298,3 +298,100 @@ Best regards,
 {profile['linkedin']}
 """
     return subject, body
+
+
+# ── Mock interview ───────────────────────────────────────────────────────────
+
+class InterviewParseError(Exception):
+    """The response wasn't well-formed interview questions or feedback."""
+
+
+async def interview_questions(profile: Dict, job: Dict) -> list[str]:
+    """One fast-tier call: 5 questions specific to this posting — a mix of
+    technical (from the job's stack) and behavioural, pitched at the
+    candidate's actual level. Raises InterviewParseError unless the response
+    is exactly 5 non-empty strings."""
+    prompt = f"""You are interviewing a candidate for this specific job posting. Write exactly 5
+interview questions tailored to it — a mix of technical questions (drawn from the job's stack and
+requirements) and behavioural questions, pitched at the candidate's actual level (not above or below it).
+
+CANDIDATE:
+{_candidate_summary(profile)}
+
+JOB:
+Title: {job.get('title', '')}
+Company: {job.get('company', '')}
+Description (excerpt):
+{(job.get('description') or '')[:DESC_CHARS]}
+
+Respond with ONLY a valid JSON array of exactly 5 question strings — no markdown:
+["...", "...", "...", "...", "..."]"""
+
+    raw, *_ = await llm.complete(prompt, tier="fast")
+    try:
+        data = json.loads(_clean_json(raw))
+    except ValueError as exc:
+        raise InterviewParseError(f"not JSON: {exc}")
+    if not isinstance(data, list) or len(data) != 5 or not all(isinstance(q, str) and q.strip() for q in data):
+        raise InterviewParseError(f"expected 5 question strings, got {data!r:.200}")
+    return [q.strip() for q in data]
+
+
+def _parse_interview_feedback(raw: str, n: int) -> list[Dict]:
+    try:
+        data = json.loads(_clean_json(raw))
+    except ValueError as exc:
+        raise InterviewParseError(f"not JSON: {exc}")
+    if not isinstance(data, list) or len(data) != n:
+        raise InterviewParseError(f"expected {n} feedback entries, got "
+                                   f"{len(data) if isinstance(data, list) else type(data).__name__}")
+    by_idx = {}
+    for d in data:
+        if not isinstance(d, dict):
+            raise InterviewParseError(f"not an object: {d!r:.80}")
+        try:
+            idx = int(d.get("question_index"))
+        except (TypeError, ValueError):
+            idx = None
+        if idx is None or not 0 <= idx < n or idx in by_idx:
+            raise InterviewParseError(f"unexpected or duplicate question_index {d.get('question_index')!r}")
+        verdict = str(d.get("verdict") or "").strip().lower()
+        if verdict not in ("strong", "improve"):
+            raise InterviewParseError(f"bad verdict {verdict!r}")
+        note = str(d.get("note") or "").strip()
+        if not note:
+            raise InterviewParseError("empty note")
+        by_idx[idx] = {"question_index": idx, "verdict": verdict, "note": note}
+    return [by_idx[i] for i in range(n)]
+
+
+async def interview_feedback(profile: Dict, job: Dict, qa: list[Dict]) -> list[Dict]:
+    """One fast-tier call covering ALL answers at once — cheaper, and lets the
+    model see the whole picture. `qa` is [{question, answer}, ...]. Returns
+    one {question_index, verdict, note} per item, matched by index like
+    parse_triage matches by job id. Raises InterviewParseError if any index
+    is missing or duplicated."""
+    qa_block = "".join(
+        f"--- Q{i} ---\nQuestion: {item['question']}\nAnswer: {item['answer']}\n"
+        for i, item in enumerate(qa)
+    )
+    prompt = f"""You are giving interview feedback to a candidate for this specific job. Assess each
+answer independently. Be concrete and honest — no praise padding.
+
+CANDIDATE:
+{_candidate_summary(profile)}
+
+JOB: {job.get('title', '')} at {job.get('company', '')}
+
+QUESTIONS AND ANSWERS:
+{qa_block}
+For each, return:
+- question_index: the number exactly as given above (Q0, Q1, ...)
+- verdict: "strong" or "improve"
+- note: ONE short, concrete sentence — what made it work, or what's missing.
+
+Respond with ONLY a valid JSON array, one object per question ({len(qa)} total) — no markdown:
+[{{"question_index": 0, "verdict": "strong", "note": ""}}]"""
+
+    raw, *_ = await llm.complete(prompt, tier="fast")
+    return _parse_interview_feedback(raw, len(qa))

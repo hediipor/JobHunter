@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import api, { API_BASE } from "@/lib/api";
 import { Job, SPONSORSHIP_META } from "@/lib/types";
-import { ArrowLeft, ExternalLink, FileText, Mail, Send, Loader2, MapPin, Building2, Zap, Sparkles, AlertTriangle } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileText, Mail, Send, Loader2, MapPin, Building2, Zap, Sparkles, AlertTriangle, MessagesSquare } from "lucide-react";
 import toast from "react-hot-toast";
 import FeedbackButtons from "@/components/FeedbackButtons";
 
@@ -234,6 +234,11 @@ function JobDetailContent() {
                   : <><FileText size={16} /> Generate CV + Cover Letter</>
                 }
               </button>
+
+              <Link href={`/jobs/interview?id=${id}`} className="btn btn-ghost"
+                style={{ width: "100%", justifyContent: "center" }}>
+                <MessagesSquare size={16} /> Practice Interview
+              </Link>
 
               {genMutation.isSuccess && (
                 <div style={{ padding: "10px 12px", background: "rgba(16,185,129,0.08)",
