@@ -15,6 +15,9 @@ function InterviewContent() {
   // Page state only — not persisted. If this turns out to be wanted, save
   // it to applications.notes instead of adding a table for it.
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
+  // Original question indexes of the answers actually sent, in sent order —
+  // question_index in `feedback` refers to position in this list, not in `questions`.
+  const [sentIndexes, setSentIndexes] = useState<number[]>([]);
   const [answerError, setAnswerError] = useState("");
 
   const { data, isLoading } = useQuery<{ questions: string[] }>({
@@ -33,17 +36,23 @@ function InterviewContent() {
 
   const getFeedback = () => {
     const qa = questions
-      .map((q, i) => ({ question: q, answer: (answers[i] || "").trim() }))
+      .map((q, i) => ({ i, question: q, answer: (answers[i] || "").trim() }))
       .filter(a => a.answer);
     if (!qa.length) {
       setAnswerError("Answer at least one question first.");
       return;
     }
     setAnswerError("");
-    feedbackMutation.mutate(qa);
+    setFeedback(null);
+    setSentIndexes(qa.map(a => a.i));
+    feedbackMutation.mutate(qa.map(({ question, answer }) => ({ question, answer })));
   };
 
-  const noteFor = (i: number) => feedback?.find(f => f.question_index === i);
+  const noteFor = (i: number) => {
+    const sentPos = sentIndexes.indexOf(i);
+    if (sentPos === -1) return undefined;
+    return feedback?.find(f => f.question_index === sentPos);
+  };
 
   if (!id) return <div className="empty"><h3>Job not found</h3></div>;
 
