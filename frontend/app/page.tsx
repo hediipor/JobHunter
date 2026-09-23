@@ -114,6 +114,13 @@ export default function Dashboard() {
     onError: () => toast.error("Couldn't update — is the backend running?"),
   });
 
+  const feedbackMutation = useMutation({
+    mutationFn: ({ jobId, feedback, reason }: { jobId: number; feedback: number; reason?: string }) =>
+      api.patch(`/jobs/${jobId}/feedback`, { feedback, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["top-jobs"] }),
+    onError: () => toast.error("Couldn't save feedback"),
+  });
+
   const digestMutation = useMutation({
     mutationFn: () => api.post("/stats/digest"),
     onSuccess: (d: any) => toast.success(d?.message || "📧 Digest sent to your inbox"),
@@ -302,7 +309,8 @@ export default function Dashboard() {
         ) : (
           <div className="grid-3">
             {topJobsList.map(j => (
-              <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)} />
+              <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)}
+                onFeedback={(jobId, feedback, reason) => feedbackMutation.mutate({ jobId, feedback, reason })} />
             ))}
           </div>
         )}

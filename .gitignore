@@ -15,6 +15,7 @@ data/generated/
 data/settings.json
 data/llm_budget.json
 data/source_cursors.json
+data/preferences.json
 
 # ── Node / Next.js (frontend has its own .gitignore too) ────
 frontend/node_modules/
