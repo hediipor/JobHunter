@@ -2,13 +2,25 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
-import { Stats, Job } from "@/lib/types";
+import { Stats, Job, LlmProvider } from "@/lib/types";
 import StatsCard from "@/components/StatsCard";
 import JobCard from "@/components/JobCard";
 import { Briefcase, Send, MessageSquare, Gift, Star, RefreshCw, Loader2, Mail, Sparkles } from "lucide-react";
 import toast from "react-hot-toast";
 
-interface ScanStatus { running: boolean; added: number | null; error: string | null; }
+interface ScanStatus {
+  running: boolean; added: number | null; error: string | null;
+  triaged: number | null; failed: number | null; skipped: number | null; triage_error: string | null;
+  source_errors: Record<string, string>;
+}
+
+interface TriageStatus {
+  running: boolean; triaged: number | null; failed: number | null; skipped: number | null; error: string | null;
+}
+
+const SOURCE_LABELS: Record<string, string> = { jsearch: "JSearch", keejob: "Keejob" };
+
+const kTokens = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 
 export default function Dashboard() {
   const qc = useQueryClient();
@@ -18,6 +30,8 @@ export default function Dashboard() {
     queryKey: ["stats"],
     queryFn: () => api.get("/stats/"),
   });
+
+  const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => api.get("/profile/") });
 
   const { data: topJobs } = useQuery<Job[]>({
     queryKey: ["top-jobs"],
@@ -41,6 +55,14 @@ export default function Dashboard() {
   // instead of guessing with a fixed timer — that's what made "is it done yet?"
   // unclear before: the button re-enabled the instant the request was *queued*,
   // not when the scan actually finished.
+  // Shares the settings page's query — only llm_providers is read here.
+  const { data: llm } = useQuery<{ llm_providers: LlmProvider[] }>({
+    queryKey: ["settings"],
+    queryFn: () => api.get("/settings/"),
+    refetchInterval: watching ? 15000 : false,
+  });
+  const providers = (llm?.llm_providers || []).filter(p => p.configured);
+
   const { data: scanStatus } = useQuery<ScanStatus>({
     queryKey: ["scan-status"],
     queryFn: () => api.get("/jobs/scan-status"),
@@ -50,14 +72,26 @@ export default function Dashboard() {
   useEffect(() => {
     if (!watching || scanStatus?.running !== false) return;
     setWatching(false);
-    if (scanStatus.error) {
-      toast.error(`Scan failed: ${scanStatus.error}`);
+    const { error, added, triaged, failed, skipped, triage_error, source_errors } = scanStatus;
+    // One source failing doesn't fail the scan — say which one, and why
+    for (const [name, msg] of Object.entries(source_errors || {})) {
+      toast.error(`${SOURCE_LABELS[name] ?? name} failed: ${msg}`, { duration: 10000 });
+    }
+    if (error) {
+      toast.error(`Scan failed: ${error}`);
+    } else if (!added) {
+      toast.success("✅ Scan complete — no new jobs this time.");
     } else {
-      toast.success(
-        scanStatus.added ? `✅ Scan complete — ${scanStatus.added} new job(s) found.` : "✅ Scan complete — no new jobs this time."
-      );
+      toast.success(`✅ Scan complete — ${added} new job(s), ${triaged ?? 0} AI-checked.`, { duration: 6000 });
+      // A scan that found jobs but couldn't assess them is not a clean success.
+      if (failed || skipped) {
+        const parts = [failed ? `${failed} failed` : "", skipped ? `${skipped} left pending (out of quota)` : ""];
+        toast.error(`AI check: ${parts.filter(Boolean).join(", ")}${triage_error ? ` — ${triage_error}` : ""}`,
+          { duration: 10000 });
+      }
     }
     qc.invalidateQueries({ queryKey: ["stats"] });
+    qc.invalidateQueries({ queryKey: ["settings"] });
     qc.invalidateQueries({ queryKey: ["top-jobs"] });
     qc.invalidateQueries({ queryKey: ["jobs"] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,17 +114,59 @@ export default function Dashboard() {
     onError: () => toast.error("Couldn't update — is the backend running?"),
   });
 
+  const feedbackMutation = useMutation({
+    mutationFn: ({ jobId, feedback, reason }: { jobId: number; feedback: number; reason?: string }) =>
+      api.patch(`/jobs/${jobId}/feedback`, { feedback, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["top-jobs"] }),
+    onError: () => toast.error("Couldn't save feedback"),
+  });
+
   const digestMutation = useMutation({
     mutationFn: () => api.post("/stats/digest"),
     onSuccess: (d: any) => toast.success(d?.message || "📧 Digest sent to your inbox"),
-    onError: () => toast.error("Digest failed — no recent jobs, or Gmail not configured."),
+    onError: (e: Error) => toast.error(e.message),
   });
 
+  const [triageWatching, setTriageWatching] = useState(false);
   const triageMutation = useMutation({
     mutationFn: () => api.post("/jobs/triage-pending"),
-    onSuccess: (d: any) => toast.success(d?.message || "🤖 Assessing jobs…", { duration: 6000 }),
-    onError: () => toast.error("Triage failed — check your Gemini API key."),
+    onSuccess: async (d: any) => {
+      toast(d?.message || "🤖 Assessing jobs…", { duration: 6000 });
+      // refresh first, or the cached running:false from page load reads as "already done"
+      if (d?.started) {
+        await qc.invalidateQueries({ queryKey: ["triage-status"] });
+        setTriageWatching(true);
+      }
+    },
+    onError: (e: Error) => toast.error(`AI check failed: ${e.message}`),
   });
+
+  // Same idea as the scan poll: end "Run AI Check" in a visible result.
+  const { data: triageStatus } = useQuery<TriageStatus>({
+    queryKey: ["triage-status"],
+    queryFn: () => api.get("/jobs/triage-status"),
+    refetchInterval: triageWatching ? 3000 : false,
+  });
+
+  useEffect(() => {
+    if (!triageWatching || triageStatus?.running !== false) return;
+    setTriageWatching(false);
+    const { triaged, failed, skipped, error } = triageStatus;
+    const detail = error ? ` — ${error}` : "";
+    if (failed || skipped) {
+      const parts = [failed ? `${failed} failed` : "", skipped ? `${skipped} left pending (out of quota)` : ""];
+      toast.error(`AI check: ${triaged ?? 0} assessed, ${parts.filter(Boolean).join(", ")}${detail}`, { duration: 10000 });
+    } else if (error) {
+      toast.error(`AI check failed${detail}`, { duration: 10000 });
+    } else {
+      toast.success(`✅ AI check done — ${triaged ?? 0} job(s) assessed.`, { duration: 6000 });
+    }
+    qc.invalidateQueries({ queryKey: ["stats"] });
+    qc.invalidateQueries({ queryKey: ["settings"] });
+    qc.invalidateQueries({ queryKey: ["top-jobs"] });
+    qc.invalidateQueries({ queryKey: ["jobs"] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triageWatching, triageStatus]);
 
   const topJobsList = (topJobs || []).slice(0, 6);
 
@@ -100,7 +176,7 @@ export default function Dashboard() {
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h1 className="page-title">
-            Good morning, <span className="gradient-text">Hedi</span> 👋
+            Good morning, <span className="gradient-text">{profile?.name?.split(" ")[0] || "there"}</span> 👋
           </h1>
           <p className="page-subtitle">Here's your job hunt overview</p>
         </div>
@@ -139,6 +215,25 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* LLM quota — otherwise the only sign you're out is a log line */}
+      {llm && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, fontSize: 12 }}>
+          {providers.length === 0 && (
+            <span className="badge badge-score-low">No LLM key configured — AI check is off</span>
+          )}
+          {providers.map(p => (
+            <span key={p.name} title={p.model}
+              className={`badge ${p.exhausted ? "badge-score-low" : "badge-source"}`}>
+              {/* Groq runs out of tokens/day long before requests/day — show the limit that binds */}
+              {p.name}: {p.daily_tokens
+                ? `${kTokens(p.tokens_today)}/${kTokens(p.daily_tokens)} tokens`
+                : `${p.used_today}${p.daily_cap ? `/${p.daily_cap}` : ""}`} today
+              {p.exhausted && " · out of quota until 00:00 UTC"}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Stats */}
       {statsLoading ? <div className="spinner" /> : stats && (
         <>
@@ -153,9 +248,12 @@ export default function Dashboard() {
           <div className="grid-2" style={{ marginBottom: 28 }}>
             {/* Score distribution */}
             <div className="card">
-              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Match Score Distribution</h3>
+              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Fit Score Distribution</h3>
+              <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 12 }}>
+                {stats.assessed} AI-checked{stats.total_jobs > stats.assessed && ` · ${stats.total_jobs - stats.assessed} pending`}
+              </p>
               {Object.entries(stats.score_distribution).map(([range, count]) => {
-                const pct = stats.total_jobs ? Math.round((count / stats.total_jobs) * 100) : 0;
+                const pct = stats.assessed ? Math.round((count / stats.assessed) * 100) : 0;
                 const color = range === "90-100" ? "var(--green)" : range === "70-89" ? "var(--accent2)" : range === "50-69" ? "var(--yellow)" : "var(--red)";
                 return (
                   <div key={range} style={{ marginBottom: 10 }}>
@@ -184,7 +282,7 @@ export default function Dashboard() {
               ))}
               <div style={{ marginTop: 16, padding: "10px 14px", background: "rgba(99,102,241,0.08)",
                 borderRadius: 8, fontSize: 13, color: "var(--text2)" }}>
-                ⚡ Avg match score: <strong style={{ color: "var(--accent)" }}>{stats.avg_score}%</strong>
+                ⚡ Avg fit score: <strong style={{ color: "var(--accent)" }}>{stats.assessed ? `${stats.avg_score}%` : "—"}</strong>
               </div>
             </div>
           </div>
@@ -197,14 +295,22 @@ export default function Dashboard() {
           <Star size={18} color="var(--yellow)" /> Top Matching Jobs
         </h2>
         {topJobsList.length === 0 ? (
-          <div className="empty">
-            <h3>No jobs yet</h3>
-            <p>Click <strong>Scan Jobs Now</strong> to discover opportunities matching your profile.</p>
-          </div>
+          stats?.total_jobs ? (
+            <div className="empty">
+              <h3>No strong fits yet</h3>
+              <p>No AI-checked job scores 60%+. {stats.total_jobs - stats.assessed} job(s) are still pending AI check.</p>
+            </div>
+          ) : (
+            <div className="empty">
+              <h3>No jobs yet</h3>
+              <p>Click <strong>Scan Jobs Now</strong> to discover opportunities matching your profile.</p>
+            </div>
+          )
         ) : (
           <div className="grid-3">
             {topJobsList.map(j => (
-              <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)} />
+              <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)}
+                onFeedback={(jobId, feedback, reason) => feedbackMutation.mutate({ jobId, feedback, reason })} />
             ))}
           </div>
         )}

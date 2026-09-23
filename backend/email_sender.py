@@ -2,6 +2,7 @@
 Email sender — uses Gmail SMTP with an App Password.
 Attaches CV and Cover Letter PDFs to the application email.
 """
+import re
 import smtplib
 import ssl
 from email import encoders
@@ -43,6 +44,7 @@ def send_application(
     body: str,
     cv_path: Optional[Path] = None,
     cover_letter_path: Optional[Path] = None,
+    applicant_name: str = "",
 ) -> bool:
     """
     Send the application email with optional PDF attachments.
@@ -54,9 +56,10 @@ def send_application(
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
+    who = re.sub(r"\W+", "_", applicant_name).strip("_") or "Applicant"
     for path, filename in [
-        (cv_path, "CV_Hedi_Bou_Maiza.pdf"),
-        (cover_letter_path, "Cover_Letter_Hedi_Bou_Maiza.pdf"),
+        (cv_path, f"CV_{who}.pdf"),
+        (cover_letter_path, f"Cover_Letter_{who}.pdf"),
     ]:
         if path and Path(path).exists():
             with open(path, "rb") as f:

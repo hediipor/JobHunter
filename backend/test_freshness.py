@@ -16,7 +16,7 @@ def _session():
 
 def demo():
     db = _session()
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     old = now - datetime.timedelta(days=3)
 
     db.add_all([

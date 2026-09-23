@@ -5,8 +5,11 @@ appends new ones, skips empty appends.
 """
 from pathlib import Path
 
-_TEMPLATE = """# ── Google Gemini ──────────────────────────────────────────
+_TEMPLATE = """# ── LLM providers (any one works; more = more free quota) ──
+# Gemini runs CV/cover letters first; Groq runs job triage first.
 GEMINI_API_KEY={GEMINI_API_KEY}
+GROQ_API_KEY={GROQ_API_KEY}
+OPENROUTER_API_KEY={OPENROUTER_API_KEY}
 
 # ── Gmail (use an App Password, NOT your main password) ────
 # Guide: https://support.google.com/accounts/answer/185833
@@ -21,7 +24,7 @@ SCAN_INTERVAL_HOURS=48
 MAX_JOBS_PER_SCAN=50
 """
 
-_DEFAULT_KEYS = ["GEMINI_API_KEY", "GMAIL_APP_PASSWORD", "GMAIL_FROM", "RAPIDAPI_KEY"]
+_DEFAULT_KEYS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "GMAIL_APP_PASSWORD", "GMAIL_FROM", "RAPIDAPI_KEY"]
 
 
 def read_env(path) -> dict[str, str]:

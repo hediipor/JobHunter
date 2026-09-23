@@ -2,22 +2,42 @@
 /jobs endpoints
 """
 import asyncio
+import datetime
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
-
+import llm
 from config import settings
 from database import Application, Job, fresh_jobs, get_db
-from ai_generator import generate_cv_data, generate_cover_letter, generate_email
+from ai_generator import (
+    generate_cv_data, generate_cover_letter, generate_email,
+    interview_questions, interview_feedback, InterviewParseError,
+)
 from pdf_builder import build_cv_pdf, build_cover_letter_pdf
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger("jobs")
+
+# The loop only weakly references tasks — hold them here until they finish or
+# they can be garbage-collected mid-flight.
+_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    def _done(t: asyncio.Task):
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            logger.error(f"❌ Background task failed: {t.exception()!r}")
+
+    t = asyncio.create_task(coro)
+    _tasks.add(t)
+    t.add_done_callback(_done)
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────
@@ -32,14 +52,19 @@ class JobOut(BaseModel):
     job_type: str
     date_posted: str
     salary: str
-    match_score: float
     match_reasons: List[str]
     status: str
     is_applied: bool
-    ai_score: Optional[float] = None
+    fit_score: Optional[float] = None   # the only score shown; None = pending AI check
+    assessed: bool = False
+    ai_provider: str = ""
+    ai_model: str = ""
     ai_verdict: str = ""
     sponsorship: str = ""
     dealbreakers: List[str] = []
+    also_seen: List[dict] = []          # [{source, url}] — same posting on other boards
+    feedback: Optional[int] = None      # 1 = good fit, -1 = not a fit, None = not rated
+    feedback_reason: str = ""
 
     class Config:
         from_attributes = True
@@ -68,14 +93,19 @@ def _job_out(j: Job) -> dict:
         "job_type": j.job_type or "",
         "date_posted": j.date_posted or "",
         "salary": j.salary or "",
-        "match_score": j.match_score or 0.0,
         "match_reasons": _json_list(j.match_reasons),
         "status": j.status or "new",
         "is_applied": j.is_applied or False,
-        "ai_score": j.ai_score,
+        "fit_score": j.fit_score,
+        "assessed": j.fit_score is not None,
+        "ai_provider": j.ai_provider or "",
+        "ai_model": j.ai_model or "",
         "ai_verdict": j.ai_verdict or "",
         "sponsorship": j.sponsorship or "",
         "dealbreakers": _json_list(j.dealbreakers),
+        "also_seen": [{"source": p[0], "url": p[1]} for p in _json_list(j.also_seen) if len(p) == 2],
+        "feedback": j.feedback,
+        "feedback_reason": j.feedback_reason or "",
         "description": j.description or "",
     }
 
@@ -92,21 +122,20 @@ def list_jobs(
     include_stale: bool = False,
     db: Session = Depends(get_db),
 ):
-    # rank by the Gemini fit score when we have one, else the keyword score
-    effective = func.coalesce(Job.ai_score, Job.match_score)
     q = db.query(Job) if include_stale else fresh_jobs(db)
     if source:
         q = q.filter(Job.source == source)
     if status:
         q = q.filter(Job.status == status)
     if min_score:
-        q = q.filter(effective >= min_score)
+        q = q.filter(Job.fit_score >= min_score)  # pending jobs have no score to pass
     if location:
         q = q.filter(Job.location.ilike(f"%{location}%"))
     if sponsorship:
         wanted = [s.strip() for s in sponsorship.split(",") if s.strip()]
         q = q.filter(Job.sponsorship.in_(wanted))
-    jobs = q.order_by(effective.desc()).all()
+    # assessed first by fit; pending after, in the order they'll be triaged
+    jobs = q.order_by(Job.fit_score.desc().nulls_last(), Job.match_score.desc()).all()
     return [_job_out(j) for j in jobs]
 
 
@@ -135,6 +164,28 @@ def update_status(job_id: int, body: StatusUpdate, db: Session = Depends(get_db)
     return {"ok": True}
 
 
+# ── PATCH /jobs/{id}/feedback ─────────────────────────────────────────────────
+
+class FeedbackUpdate(BaseModel):
+    feedback: int          # 1 = good fit, -1 = not a fit, 0 = clear (back to NULL)
+    reason: Optional[str] = None   # short free text, mainly for 👎
+
+@router.patch("/{job_id:int}/feedback")
+def update_feedback(job_id: int, body: FeedbackUpdate, db: Session = Depends(get_db)):
+    if body.feedback not in (1, -1, 0):
+        raise HTTPException(400, "feedback must be 1, -1 or 0")
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    if body.feedback == 0:
+        j.feedback, j.feedback_reason = None, None
+    else:
+        j.feedback = body.feedback
+        j.feedback_reason = ((body.reason or "").strip()[:200]) or None
+    db.commit()
+    return _job_out(j)
+
+
 # ── POST /jobs/{id}/mark-applied ──────────────────────────────────────────────
 
 @router.post("/{job_id:int}/mark-applied")
@@ -152,8 +203,15 @@ def mark_applied(job_id: int, db: Session = Depends(get_db)):
         j.status = "applied"
         if not db.query(Application).filter(Application.job_id == job_id).first():
             db.add(Application(job_id=job_id, response_status="pending"))
-    elif j.status == "applied":
-        j.status = "new"
+    else:
+        if j.status == "applied":
+            j.status = "new"
+        # drop the bare tracker row from toggle-on — but never one with a CV,
+        # an email, a sent mail, a logged response or notes on it
+        app = db.query(Application).filter(Application.job_id == job_id).first()
+        if app and not (app.cv_path or app.cover_letter_path or app.email_body or app.email_sent
+                        or app.notes or app.response_status not in (None, "pending")):
+            db.delete(app)
 
     db.commit()
     return _job_out(j)
@@ -162,79 +220,94 @@ def mark_applied(job_id: int, db: Session = Depends(get_db)):
 # ── POST /jobs/{id}/triage ────────────────────────────────────────────────────
 
 @router.post("/{job_id:int}/triage")
-def triage_one(job_id: int, db: Session = Depends(get_db)):
-    """Run (or re-run) the Gemini fit + sponsorship check on a single job."""
-    from scan_service import _apply_triage
-    from ai_generator import triage_job
+async def triage_one(job_id: int, db: Session = Depends(get_db)):
+    """Run (or re-run) the AI fit + sponsorship check on a single job."""
+    from scan_service import _apply_triage, _job_dict
+    from ai_generator import TriageParseError, triage_batch
 
+    # Sync SQLAlchemy inside async endpoints runs on the event loop — deliberate:
+    # local SQLite queries are sub-millisecond, not worth a thread hop.
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
         raise HTTPException(404, "Job not found")
     with open(settings.profile_path, encoding="utf-8") as f:
         profile = json.load(f)
 
-    result = asyncio.run(triage_job(profile, _job_out(j)))
-    if not _apply_triage(j, result):
-        raise HTTPException(502, "Gemini returned nothing — check the GEMINI_API_KEY.")
+    try:
+        [result], provider, model = await triage_batch(profile, [_job_dict(j)])
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except (llm.LLMError, TriageParseError) as exc:
+        raise HTTPException(502, f"AI check failed: {exc}")
+    _apply_triage(j, result, provider, model)
     db.commit()
     return _job_out(j)
 
 
 # ── POST /jobs/triage-pending ─────────────────────────────────────────────────
 
-def _triage_pending(session_factory, limit: int):
+async def _triage_pending(session_factory, limit: int):
     """Background task: triage fresh jobs that were never assessed."""
-    import asyncio as _a
     from database import fresh_jobs
-    from scan_service import triage_jobs
+    from scan_service import _triage_state, triage_jobs
 
     db = session_factory()
+    t = {"triaged": None, "failed": None, "skipped": None, "error": None}
     try:
         with open(settings.profile_path, encoding="utf-8") as f:
             profile = json.load(f)
         pending = (
             fresh_jobs(db)
             .filter(Job.ai_assessed_at.is_(None))
-            .order_by(func.coalesce(Job.ai_score, Job.match_score).desc())
+            .order_by(Job.match_score.desc())  # keyword hint: likeliest fits first
             .limit(limit)
             .all()
         )
-        _a.run(triage_jobs(db, pending, profile))
+        t = await triage_jobs(db, pending, profile)
         db.commit()
+    except Exception as exc:
+        t["error"] = str(exc)
+        raise
     finally:
         db.close()
+        _triage_state.update(t, running=False, finished_at=datetime.datetime.now(datetime.UTC).isoformat())
 
 
 @router.post("/triage-pending")
-def triage_pending(background_tasks: BackgroundTasks, limit: int = 25, db: Session = Depends(get_db)):
-    """Kick off Gemini triage for fresh jobs that haven't been assessed yet.
-    Rate-limited (~13s/job) for the free tier, so it runs in the background."""
+async def triage_pending(limit: int = 25, db: Session = Depends(get_db)):
+    """Kick off AI triage for fresh jobs that haven't been assessed yet.
+    Rate-limited per provider, so it runs in the background."""
     from database import SessionLocal, fresh_jobs
+    from scan_service import _triage_state
 
+    if _triage_state["running"]:
+        return {"started": False, "message": "An AI check is already running."}
     n = fresh_jobs(db).filter(Job.ai_assessed_at.is_(None)).count()
     if not n:
-        return {"message": "All fresh jobs already assessed."}
+        return {"started": False, "message": "All fresh jobs already assessed."}
     take = min(n, limit)
-    background_tasks.add_task(_triage_pending, SessionLocal, limit)
-    return {"message": f"Assessing {take} of {n} pending job(s) — ~{round(take * 13 / 60)} min. Refresh to see results."}
+    _triage_state.update(running=True, finished_at=None, triaged=None, failed=None, skipped=None, error=None)
+    _spawn(_triage_pending(SessionLocal, limit))
+    return {"started": True, "message": f"Assessing {take} of {n} pending job(s) in the background."}
+
+
+@router.get("/triage-status")
+def triage_status():
+    """Poll after POST /triage-pending; running=false means the counts are final."""
+    from scan_service import get_triage_state
+    return get_triage_state()
 
 
 # ── POST /jobs/scan ───────────────────────────────────────────────────────────
 
-def _do_scan(db_session_factory):
-    """Background task: run the shared scan pipeline."""
-    from scan_service import scan_and_store
-    return asyncio.run(scan_and_store(db_session_factory))
-
-
 @router.post("/scan")
-def trigger_scan(background_tasks: BackgroundTasks):
+async def trigger_scan():
     from database import SessionLocal
-    from scan_service import get_scan_state
+    from scan_service import get_scan_state, scan_and_store
 
     if get_scan_state()["running"]:
         return {"message": "A scan is already running"}
-    background_tasks.add_task(_do_scan, SessionLocal)
+    _spawn(scan_and_store(SessionLocal))
     return {"message": "Scan started in background"}
 
 
@@ -250,7 +323,7 @@ def scan_status():
 # ── POST /jobs/{id}/generate ──────────────────────────────────────────────────
 
 @router.post("/{job_id:int}/generate")
-def generate_documents(job_id: int, db: Session = Depends(get_db)):
+async def generate_documents(job_id: int, db: Session = Depends(get_db)):
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j:
         raise HTTPException(404, "Job not found")
@@ -260,20 +333,21 @@ def generate_documents(job_id: int, db: Session = Depends(get_db)):
 
     job_dict = _job_out(j)
 
-    async def _gen():
+    try:
         cv_data = await generate_cv_data(profile, job_dict)
         cl_text = await generate_cover_letter(profile, job_dict, cv_data)
-        subject, body = await generate_email(profile, job_dict, cl_text)
-        return cv_data, cl_text, subject, body
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except llm.LLMError as exc:
+        raise HTTPException(502, f"LLM call failed: {exc}")
+    subject, body = await generate_email(profile, job_dict, cl_text)
 
-    cv_data, cl_text, subject, body = asyncio.run(_gen())
-
-    # Build PDFs
+    # Build PDFs — ReportLab is CPU-bound, keep it off the loop
     slug = f"job_{job_id}"
     cv_path = settings.generated_dir / f"CV_{slug}.pdf"
     cl_path = settings.generated_dir / f"CL_{slug}.pdf"
-    build_cv_pdf(profile, cv_data, cv_path)
-    build_cover_letter_pdf(profile, job_dict, cl_text, cl_path)
+    await asyncio.to_thread(build_cv_pdf, profile, cv_data, cv_path)
+    await asyncio.to_thread(build_cover_letter_pdf, profile, job_dict, cl_text, cl_path)
 
     # Persist / update application record
     app = db.query(Application).filter(Application.job_id == job_id).first()
@@ -295,6 +369,55 @@ def generate_documents(job_id: int, db: Session = Depends(get_db)):
     }
 
 
+# ── POST /jobs/{id}/interview ─────────────────────────────────────────────────
+
+@router.post("/{job_id:int}/interview")
+async def interview(job_id: int, db: Session = Depends(get_db)):
+    """5 role-specific mock-interview questions. Not persisted."""
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    with open(settings.profile_path, encoding="utf-8") as f:
+        profile = json.load(f)
+
+    try:
+        questions = await interview_questions(profile, _job_out(j))
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except (llm.LLMError, InterviewParseError) as exc:
+        raise HTTPException(502, f"AI interview failed: {exc}")
+    return {"questions": questions}
+
+
+# ── POST /jobs/{id}/interview/feedback ────────────────────────────────────────
+
+class InterviewAnswer(BaseModel):
+    question: str
+    answer: str
+
+class InterviewFeedbackRequest(BaseModel):
+    answers: List[InterviewAnswer]
+
+@router.post("/{job_id:int}/interview/feedback")
+async def interview_feedback_route(job_id: int, body: InterviewFeedbackRequest, db: Session = Depends(get_db)):
+    if not body.answers:
+        raise HTTPException(422, "At least one answer is required.")
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    with open(settings.profile_path, encoding="utf-8") as f:
+        profile = json.load(f)
+
+    qa = [a.model_dump() for a in body.answers]
+    try:
+        feedback = await interview_feedback(profile, _job_out(j), qa)
+    except llm.AllProvidersExhausted:
+        raise HTTPException(503, "Every LLM provider is out of quota for today.")
+    except (llm.LLMError, InterviewParseError) as exc:
+        raise HTTPException(502, f"AI feedback failed: {exc}")
+    return {"feedback": feedback}
+
+
 # ── POST /jobs/{id}/apply ─────────────────────────────────────────────────────
 
 class ApplyRequest(BaseModel):
@@ -302,7 +425,6 @@ class ApplyRequest(BaseModel):
 
 @router.post("/{job_id:int}/apply")
 def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db)):
-    import datetime
     from email_sender import send_application
 
     j = db.query(Job).filter(Job.id == job_id).first()
@@ -314,7 +436,10 @@ def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db))
         raise HTTPException(400, "Generate documents first before applying.")
 
     try:
+        with open(settings.profile_path, encoding="utf-8") as f:
+            applicant_name = json.load(f).get("name", "")
         send_application(
+            applicant_name=applicant_name,
             to_email=body.to_email,
             subject=app.email_subject,
             body=app.email_body,
@@ -325,7 +450,7 @@ def apply_to_job(job_id: int, body: ApplyRequest, db: Session = Depends(get_db))
         raise HTTPException(500, f"Email failed: {exc}")
 
     app.email_sent = True
-    app.sent_at = datetime.datetime.utcnow()
+    app.sent_at = datetime.datetime.now(datetime.UTC)
     j.is_applied = True
     j.status = "applied"
     db.commit()

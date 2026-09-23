@@ -6,11 +6,11 @@ Push-Location frontend
 npm run build
 Pop-Location
 
-.\.venv\Scripts\pip.exe show pyinstaller > $null 2>&1
+.\.venv\Scripts\python.exe -m pip show pyinstaller > $null 2>&1
 if ($LASTEXITCODE -ne 0) {
-  .\.venv\Scripts\pip.exe install pyinstaller
+  .\.venv\Scripts\python.exe -m pip install pyinstaller
 }
 
-.\.venv\Scripts\pyinstaller.exe pyinstaller.spec --distpath backend\dist --workpath backend\build
+.\.venv\Scripts\python.exe -m PyInstaller pyinstaller.spec --distpath backend\dist --workpath backend\build
 
 Write-Host "Built: backend\dist\JobHunterAI.exe"

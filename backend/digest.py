@@ -1,7 +1,7 @@
 """
 Daily digest email — a summary of the jobs a scan just added, ranked by the
-Gemini fit score (falling back to the keyword score). Sent after each
-scheduled scan by scheduler.run_scan.
+AI fit score (Job.fit_score); jobs not yet assessed are listed as pending.
+Sent after each scheduled scan by scheduler.run_scan.
 """
 import html
 import json
@@ -13,7 +13,7 @@ from email_sender import send_digest
 
 logger = logging.getLogger("digest")
 
-# Effective score at/above which a job goes in the "strong matches" block.
+# Fit score at/above which a job goes in the "strong matches" block.
 STRONG_CUTOFF = 65
 # Hard cap on rows so the email stays skimmable.
 MAX_ROWS = 12
@@ -26,8 +26,14 @@ _SPONSOR_LABEL = {
 }
 
 
-def _score(j: Job) -> float:
-    return j.ai_score if j.ai_score is not None else (j.match_score or 0.0)
+def job_url(job_id: int) -> str:
+    """Link to a job's detail page — the static export serves /jobs/detail/?id=."""
+    return f"{settings.frontend_url}/jobs/detail/?id={job_id}"
+
+
+def _rank(j: Job) -> tuple:
+    """Assessed jobs by fit, highest first; pending ones after."""
+    return (j.fit_score is not None, j.fit_score or 0)
 
 
 def _deals(j: Job) -> list[str]:
@@ -41,10 +47,11 @@ def _row(j: Job) -> str:
     e = html.escape
     deals = _deals(j)
     sponsor = _SPONSOR_LABEL.get(j.sponsorship or "", "")
+    score = f"{round(j.fit_score)}%" if j.fit_score is not None else "pending"
     parts = [
-        f'<td style="padding:10px 8px;font-weight:700;color:#6366f1;white-space:nowrap">{int(_score(j))}%</td>',
+        f'<td style="padding:10px 8px;font-weight:700;color:#6366f1;white-space:nowrap">{score}</td>',
         '<td style="padding:10px 8px">'
-        f'<a href="{settings.frontend_url}/jobs/{j.id}" style="color:#0f172a;font-weight:600;text-decoration:none">'
+        f'<a href="{job_url(j.id)}" style="color:#0f172a;font-weight:600;text-decoration:none">'
         f'{e(j.title or "?")}</a><br>'
         f'<span style="color:#64748b;font-size:13px">{e(j.company or "?")} — {e(j.location or "?")}</span>'
         + (f'<br><span style="color:#475569;font-size:13px">{e(j.ai_verdict)}</span>' if j.ai_verdict else "")
@@ -70,8 +77,8 @@ def render_digest(jobs: list) -> tuple[str, str] | None:
     if not jobs:
         return None
 
-    jobs = sorted(jobs, key=_score, reverse=True)
-    strong = [j for j in jobs if _score(j) >= STRONG_CUTOFF]
+    jobs = sorted(jobs, key=_rank, reverse=True)
+    strong = [j for j in jobs if j.fit_score is not None and j.fit_score >= STRONG_CUTOFF]
     shown = (strong or jobs)[:MAX_ROWS]
 
     subject = (
@@ -96,7 +103,7 @@ def render_digest(jobs: list) -> tuple[str, str] | None:
     body = f"""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:0 auto;color:#0f172a">
   <h2 style="margin:0 0 4px">{len(jobs)} new job{'s' if len(jobs) != 1 else ''} today</h2>
   <p style="color:#64748b;margin:0 0 16px">
-    Ranked by Gemini fit score. {len(strong)} scored {STRONG_CUTOFF}%+.
+    Ranked by AI fit score. {len(strong)} scored {STRONG_CUTOFF}%+.
   </p>
   {table}
   {footer}

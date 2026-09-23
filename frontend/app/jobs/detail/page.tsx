@@ -4,9 +4,10 @@ import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import api, { API_BASE } from "@/lib/api";
-import { Job, SPONSORSHIP_META, effectiveScore } from "@/lib/types";
-import { ArrowLeft, ExternalLink, FileText, Mail, Send, Loader2, MapPin, Building2, Zap, Sparkles, AlertTriangle } from "lucide-react";
+import { Job, SPONSORSHIP_META } from "@/lib/types";
+import { ArrowLeft, ExternalLink, FileText, Mail, Send, Loader2, MapPin, Building2, Zap, Sparkles, AlertTriangle, MessagesSquare } from "lucide-react";
 import toast from "react-hot-toast";
+import FeedbackButtons from "@/components/FeedbackButtons";
 
 function JobDetailContent() {
   const id = useSearchParams().get("id");
@@ -26,7 +27,7 @@ function JobDetailContent() {
       qc.invalidateQueries({ queryKey: ["job", id] });
       toast.success("📄 CV & Cover Letter generated!");
     },
-    onError: () => toast.error("Generation failed — check your Gemini API key."),
+    onError: (e: Error) => toast.error(`Generation failed: ${e.message}`),
   });
 
   const applyMutation = useMutation({
@@ -37,7 +38,7 @@ function JobDetailContent() {
       qc.invalidateQueries({ queryKey: ["job", id] });
       qc.invalidateQueries({ queryKey: ["stats"] });
     },
-    onError: (err: any) => toast.error("Email failed — check Gmail settings."),
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const triageMutation = useMutation({
@@ -46,7 +47,7 @@ function JobDetailContent() {
       toast.success("🤖 AI assessment updated");
       qc.invalidateQueries({ queryKey: ["job", id] });
     },
-    onError: () => toast.error("Triage failed — check your Gemini API key."),
+    onError: (e: Error) => toast.error(`AI check failed: ${e.message}`),
   });
 
   const markAppliedMutation = useMutation({
@@ -60,16 +61,23 @@ function JobDetailContent() {
     onError: () => toast.error("Couldn't update — is the backend running?"),
   });
 
+  const feedbackMutation = useMutation({
+    mutationFn: ({ feedback, reason }: { feedback: number; reason?: string }) =>
+      api.patch(`/jobs/${id}/feedback`, { feedback, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job", id] }),
+    onError: () => toast.error("Couldn't save feedback"),
+  });
+
   if (!id) return <div className="empty"><h3>Job not found</h3></div>;
   if (isLoading) return <div className="spinner" />;
   if (!job) return <div className="empty"><h3>Job not found</h3></div>;
 
-  const score = Math.round(effectiveScore(job));
+  const score = job.assessed && job.fit_score != null ? Math.round(job.fit_score) : null;
   const sponsor = job.sponsorship ? SPONSORSHIP_META[job.sponsorship] : undefined;
   const dealbreakers = job.dealbreakers ?? [];
-  const scoreColor = score >= 70 ? "var(--green)" : score >= 50 ? "var(--yellow)" : "var(--red)";
+  const scoreColor = score == null ? "var(--text3)" : score >= 70 ? "var(--green)" : score >= 50 ? "var(--yellow)" : "var(--red)";
   const circ = 2 * Math.PI * 38;
-  const filled = (score / 100) * circ;
+  const filled = ((score ?? 0) / 100) * circ;
 
   return (
     <div>
@@ -89,6 +97,18 @@ function JobDetailContent() {
                   <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Building2 size={14} />{job.company}</span>
                   <span style={{ display: "flex", alignItems: "center", gap: 5 }}><MapPin size={14} />{job.location}</span>
                 </div>
+                {(job.also_seen ?? []).length > 0 && (
+                  <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 6 }}>
+                    Also listed on:{" "}
+                    {job.also_seen!.map((s, i) => (
+                      <span key={s.url}>
+                        {i > 0 && ", "}
+                        <a href={s.url} target="_blank" rel="noopener noreferrer"
+                          style={{ color: "var(--accent2)", textTransform: "capitalize" }}>{s.source} ↗</a>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               {/* Big score ring */}
               <div style={{ position: "relative", width: 88, height: 88, flexShrink: 0 }}>
@@ -99,8 +119,16 @@ function JobDetailContent() {
                 </svg>
                 <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
                   alignItems: "center", justifyContent: "center" }}>
-                  <span style={{ fontSize: 20, fontWeight: 800, color: scoreColor }}>{score}%</span>
-                  <span style={{ fontSize: 10, color: "var(--text2)" }}>Match</span>
+                  {score != null ? (
+                    <>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: scoreColor }}>{score}%</span>
+                      <span style={{ fontSize: 10, color: "var(--text2)" }}>AI fit</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--text3)", textAlign: "center", lineHeight: 1.2 }}>
+                      pending<br />AI check
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -119,12 +147,16 @@ function JobDetailContent() {
               <h3 style={{ fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
                 <Sparkles size={16} color="var(--accent2)" /> AI Assessment
               </h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => triageMutation.mutate()}
-                disabled={triageMutation.isPending}>
-                {triageMutation.isPending
-                  ? <><Loader2 size={13} style={{ animation: "spin 0.7s linear infinite" }} /> Checking…</>
-                  : (job.ai_verdict ? "Re-check" : "Run check")}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <FeedbackButtons feedback={job.feedback}
+                  onRate={(fb, reason) => feedbackMutation.mutate({ feedback: fb, reason })} />
+                <button className="btn btn-ghost btn-sm" onClick={() => triageMutation.mutate()}
+                  disabled={triageMutation.isPending}>
+                  {triageMutation.isPending
+                    ? <><Loader2 size={13} style={{ animation: "spin 0.7s linear infinite" }} /> Checking…</>
+                    : (job.ai_verdict ? "Re-check" : "Run check")}
+                </button>
+              </div>
             </div>
             {job.ai_verdict ? (
               <>
@@ -132,8 +164,8 @@ function JobDetailContent() {
                   {job.ai_verdict}
                 </p>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: dealbreakers.length ? 12 : 0 }}>
-                  {job.ai_score != null && (
-                    <span className="badge badge-source">AI fit {Math.round(job.ai_score)}%</span>
+                  {job.fit_score != null && (
+                    <span className="badge badge-source">AI fit {Math.round(job.fit_score)}%</span>
                   )}
                   {sponsor && (
                     <span className="badge badge-source" style={{ borderColor: sponsor.color + "55", color: sponsor.color }}>
@@ -147,10 +179,16 @@ function JobDetailContent() {
                     <AlertTriangle size={13} style={{ marginTop: 2, flexShrink: 0 }} /> {d}
                   </div>
                 ))}
+                {job.ai_provider && (
+                  <p style={{ fontSize: 11, color: "var(--text3)", marginTop: 8 }}>
+                    Assessed by {job.ai_provider} · {job.ai_model}
+                  </p>
+                )}
               </>
             ) : (
               <p style={{ fontSize: 13, color: "var(--text3)" }}>
-                Not assessed yet. Gemini checks the top matches each scan — run it manually here.
+                Pending AI check. Every scan assesses all its new jobs, until the day&apos;s LLM quota
+                runs out — run it manually here, or use Run AI Check on the dashboard.
               </p>
             )}
           </div>
@@ -196,6 +234,11 @@ function JobDetailContent() {
                   : <><FileText size={16} /> Generate CV + Cover Letter</>
                 }
               </button>
+
+              <Link href={`/jobs/interview?id=${id}`} className="btn btn-ghost"
+                style={{ width: "100%", justifyContent: "center" }}>
+                <MessagesSquare size={16} /> Practice Interview
+              </Link>
 
               {genMutation.isSuccess && (
                 <div style={{ padding: "10px 12px", background: "rgba(16,185,129,0.08)",

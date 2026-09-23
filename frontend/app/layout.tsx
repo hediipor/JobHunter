@@ -6,7 +6,7 @@ import SetupGate from "@/components/SetupGate";
 import { Toaster } from "react-hot-toast";
 
 export const metadata: Metadata = {
-  title: "JobHunter AI — Hedi Bou Maiza",
+  title: "JobHunter AI",
   description: "Personal AI-powered job finder and application assistant",
 };
 

@@ -1,78 +1,24 @@
 """
-AI document generator using Google Gemini.
-Produces: tailored CV data, cover letter text, and application email.
+AI document generator. Produces: tailored CV data, cover letter text, and
+application email. Every model call goes through llm.complete().
 """
-import asyncio
 import json
 import logging
 import re
-import time
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
-import google.generativeai as genai
-
-from config import settings
+import llm
+import preferences
 
 logger = logging.getLogger("ai_generator")
 
-genai.configure(api_key=settings.gemini_api_key)
-_model = genai.GenerativeModel("gemini-3.6-flash")
-
-
-def reload_client() -> None:
-    """Re-init the Gemini client after the API key changes at runtime (setup wizard)."""
-    global _model
-    genai.configure(api_key=settings.gemini_api_key)
-    _model = genai.GenerativeModel("gemini-3.6-flash")
-
 
 def _clean_json(raw: str) -> str:
-    """Strip markdown fences from a Gemini JSON response."""
+    """Strip markdown fences from a model's JSON response."""
     raw = raw.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     return raw.strip()
-
-
-def _call(prompt: str) -> str:
-    response = _model.generate_content(prompt)
-    return response.text
-
-
-# ── Triage rate limiting ─────────────────────────────────────────────────────
-# The Gemini free tier caps generate_content at ~5 requests/minute. Triage runs
-# in batches (15 per scan, more on a backfill), so serialise the calls with a
-# spacer well under that ceiling and retry once when a 429 slips through.
-# ponytail: fixed 13s spacer — if you move to a paid tier, drop TRIAGE_MIN_INTERVAL.
-TRIAGE_MIN_INTERVAL = 13.0
-_triage_lock = asyncio.Lock()
-_last_triage_at = 0.0
-
-
-def _retry_after(exc: Exception) -> float:
-    m = re.search(r"retry.?delay.*?seconds:\s*(\d+)", str(exc), re.I | re.S) \
-        or re.search(r"retry in (\d+(?:\.\d+)?)s", str(exc), re.I)
-    return min(float(m.group(1)) + 1, 65.0) if m else 20.0
-
-
-async def _throttled_call(prompt: str) -> str:
-    global _last_triage_at
-    async with _triage_lock:
-        wait = TRIAGE_MIN_INTERVAL - (time.monotonic() - _last_triage_at)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        try:
-            return await asyncio.to_thread(_call, prompt)
-        except Exception as exc:
-            s = str(exc)
-            if "429" not in s:
-                raise
-            if "PerDay" in s or "per day" in s.lower():
-                raise TriageQuotaExhausted(s) from exc
-            await asyncio.sleep(_retry_after(exc))
-            return await asyncio.to_thread(_call, prompt)
-        finally:
-            _last_triage_at = time.monotonic()
 
 
 # ── Job triage (fit + visa sponsorship + dealbreakers) ───────────────────────
@@ -98,74 +44,144 @@ def _candidate_summary(profile: Dict) -> str:
     )
 
 
-_TRIAGE_FALLBACK = {"fit_score": None, "verdict": "", "sponsorship": "", "dealbreakers": []}
+# Bump when the triage prompt changes: rows with an older version can then be
+# re-triaged selectively. NULL = assessed before versioning existed.
+TRIAGE_VERSION = 2
+
+# Job text per posting in the prompt — same for batches and singles, so
+# batching doesn't change what the model sees.
+DESC_CHARS = 3000
+
+# Estimated prompt tokens per batch call. Groq's free gpt-oss-120b allows 8K
+# tokens/min *per request included*, and hidden reasoning + output
+# (llm.COMPLETION_ALLOWANCE) come on top — ~4K prompt keeps a call well under.
+BATCH_PROMPT_TOKENS = 4000
 
 
-class TriageQuotaExhausted(Exception):
-    """Raised when the Gemini *daily* free-tier quota is spent — caller should
-    stop the batch rather than retry against a wall."""
+class TriageParseError(Exception):
+    """The response wasn't one valid assessment per requested job id."""
 
 
-async def triage_job(profile: Dict, job: Dict) -> Dict:
-    """
-    One Gemini call that screens a posting for THIS candidate. Returns
-    {fit_score: int|None, verdict: str, sponsorship: str, dealbreakers: [str]}.
-    """
-    if not settings.gemini_api_key:
-        return dict(_TRIAGE_FALLBACK)
+def _job_block(job: Dict) -> str:
+    return (f"--- JOB id={job['id']} ---\n"
+            f"Title: {job.get('title', '')}\n"
+            f"Company: {job.get('company', '')}\n"
+            f"Location: {job.get('location', '')}\n"
+            f"Description (excerpt):\n{(job.get('description') or '')[:DESC_CHARS]}\n")
 
-    prompt = f"""You are screening a job posting for a specific candidate. Be strict and realistic.
+
+def _triage_prompt(profile: Dict, jobs: list[Dict]) -> str:
+    note = preferences.get_note()
+    note_block = (
+        f"\nWHAT THIS CANDIDATE HAS SAID ABOUT SIMILAR JOBS (from their own 👍/👎):\n{note}\n"
+        if note else ""
+    )
+    return f"""You are screening job postings for a specific candidate. Be strict and realistic.
+Assess each job independently.
 
 CANDIDATE:
 {_candidate_summary(profile)}
-
-JOB:
-Title: {job.get('title', '')}
-Company: {job.get('company', '')}
-Location: {job.get('location', '')}
-Description (excerpt):
-{(job.get('description') or '')[:3500]}
-
-Return:
-1. fit_score (0-100): realistic fit for this candidate's actual level and stack. A senior/lead
-   role for an early-career candidate scores low even with a matching stack.
-2. verdict: ONE plain sentence — the single thing that matters most about this fit.
-3. sponsorship: one of
-   - "yes"     — posting explicitly offers visa sponsorship / relocation, OR role is remote and hires globally,
-                 OR the candidate is already located in the job's country
-   - "likely"  — not stated, but a large international employer where sponsorship for this role is common
-   - "unclear" — not mentioned and cannot be inferred
-   - "no"      — posting requires existing work authorization / citizenship / security clearance,
-                 or says sponsorship is not available
-4. dealbreakers: array of SHORT strings — hard blockers for THIS candidate only
+{note_block}
+JOBS:
+{"".join(_job_block(j) for j in jobs)}
+For each job return:
+- id: the job's id exactly as given above
+- fit_score (0-100): realistic fit for this candidate's actual level and stack. A senior/lead
+  role for an early-career candidate scores low even with a matching stack.
+- verdict: ONE plain sentence — the single thing that matters most about this fit.
+- sponsorship: one of
+   "yes"     — posting explicitly offers visa sponsorship / relocation, OR role is remote and hires globally,
+               OR the candidate is already located in the job's country
+   "likely"  — not stated, but a large international employer where sponsorship for this role is common
+   "unclear" — not mentioned and cannot be inferred
+   "no"      — posting requires existing work authorization / citizenship / security clearance,
+               or says sponsorship is not available
+- dealbreakers: array of SHORT strings — hard blockers for THIS candidate only
    (e.g. "Requires 5+ years experience", "Requires EU citizenship", "On-site only, no relocation",
    "Requires native German"). Empty array if none.
 
-Respond with ONLY a valid JSON object — no markdown:
-{{"fit_score": 0, "verdict": "", "sponsorship": "unclear", "dealbreakers": []}}"""
+Respond with ONLY a valid JSON array, one object per job ({len(jobs)} total) — no markdown:
+[{{"id": 0, "fit_score": 0, "verdict": "", "sponsorship": "unclear", "dealbreakers": []}}]"""
 
+
+def _parse_assessment(d) -> Dict:
+    if not isinstance(d, dict):
+        raise TriageParseError(f"not an object: {d!r:.80}")
+    fs = d.get("fit_score")
+    if isinstance(fs, bool) or not isinstance(fs, (int, float)) or not 0 <= fs <= 100:
+        raise TriageParseError(f"bad fit_score {fs!r}")
+    verdict = str(d.get("verdict") or "").strip()
+    if not verdict:
+        raise TriageParseError("empty verdict")
+    sponsorship = str(d.get("sponsorship") or "").strip().lower()
+    deals = d.get("dealbreakers") or []
+    if not isinstance(deals, list):
+        raise TriageParseError("dealbreakers not a list")
+    return {
+        "fit_score": float(fs),
+        "verdict": verdict,
+        "sponsorship": sponsorship if sponsorship in ("yes", "likely", "unclear", "no") else "unclear",
+        "dealbreakers": [str(x).strip() for x in deals if str(x).strip()],
+    }
+
+
+def parse_triage(raw: str, ids: list[int]) -> list[Dict]:
+    """Assessments aligned to `ids`, matched by id — not by position. Raises
+    TriageParseError unless there is exactly one valid assessment per id:
+    a wrong verdict on the wrong job is worse than no verdict."""
     try:
-        raw = await _throttled_call(prompt)
         data = json.loads(_clean_json(raw))
-        fs = data.get("fit_score")
-        return {
-            "fit_score": float(fs) if isinstance(fs, (int, float)) else None,
-            "verdict": str(data.get("verdict", "")).strip(),
-            "sponsorship": str(data.get("sponsorship", "unclear")).strip().lower(),
-            "dealbreakers": [str(d).strip() for d in data.get("dealbreakers", []) if str(d).strip()],
-        }
-    except TriageQuotaExhausted:
-        raise
-    except Exception as exc:
-        logger.warning(f"triage failed for {job.get('title', '?')}: {exc}")
-        return dict(_TRIAGE_FALLBACK)
+    except ValueError as exc:
+        raise TriageParseError(f"not JSON: {exc}")
+    if isinstance(data, dict) and len(ids) == 1:
+        data = [data]  # some models unwrap a one-element array
+    if not isinstance(data, list) or len(data) != len(ids):
+        raise TriageParseError(f"expected {len(ids)} assessments, got "
+                               f"{len(data) if isinstance(data, list) else type(data).__name__}")
+    by_id = {}
+    for d in data:
+        try:
+            jid = int(d.get("id")) if isinstance(d, dict) else None
+        except (TypeError, ValueError):
+            jid = None
+        if jid not in ids or jid in by_id:
+            raise TriageParseError(f"unexpected or duplicate id {d.get('id') if isinstance(d, dict) else d!r:.40}")
+        by_id[jid] = _parse_assessment(d)
+    return [by_id[i] for i in ids]
+
+
+def triage_batches(profile: Dict, jobs: list[Dict]) -> list[list[Dict]]:
+    """Group jobs (in the given priority order) into batches that fit
+    BATCH_PROMPT_TOKENS, estimated at ~4 chars/token."""
+    overhead = len(_triage_prompt(profile, [])) // 4
+    batches, cur, used = [], [], overhead
+    for j in jobs:
+        t = len(_job_block(j)) // 4
+        if cur and used + t > BATCH_PROMPT_TOKENS:
+            batches.append(cur)
+            cur, used = [], overhead
+        cur.append(j)
+        used += t
+    return batches + ([cur] if cur else [])
+
+
+async def triage_batch(profile: Dict, jobs: list[Dict]) -> tuple[list[Dict], str, str]:
+    """
+    One fast-tier LLM call that screens several postings (each dict needs an
+    `id`) for THIS candidate. Returns (assessments aligned to jobs, provider,
+    model); each assessment is {fit_score, verdict, sponsorship, dealbreakers}.
+    Raises TriageParseError on a malformed/misaligned response, and lets
+    llm.AllProvidersExhausted / llm.LLMError through for the caller to count.
+    """
+    raw, provider, model = await llm.complete(_triage_prompt(profile, jobs), tier="fast")
+    return parse_triage(raw, [j["id"] for j in jobs]), provider, model
 
 
 # ── CV tailoring ─────────────────────────────────────────────────────────────
 
 async def generate_cv_data(profile: Dict, job: Dict) -> Dict:
     """
-    Ask Gemini to tailor the CV data for the specific job.
+    Ask the quality-tier LLM to tailor the CV data for the specific job.
     Returns a dict with keys: summary, highlighted_skills, tailored_projects, key_achievements.
     """
     prompt = f"""You are a professional resume writer. Tailor this candidate's CV for the given job posting.
@@ -185,7 +201,7 @@ INSTRUCTIONS:
 - Write a 2-3 sentence professional summary tailored to this role.
 - Select and reorder the most relevant skills (max 12).
 - Select and reorder the most relevant projects (max 4).
-- Write 3-5 achievement bullets from the experience section, emphasising what matches the JD.
+- Write 3-5 achievement bullets from the most recent role in the experience section only, emphasising what matches the JD.
 
 Respond with ONLY a valid JSON object — no markdown, no extra text:
 {{
@@ -195,7 +211,7 @@ Respond with ONLY a valid JSON object — no markdown, no extra text:
   "key_achievements": ["...", "..."]
 }}"""
 
-    raw = await asyncio.to_thread(_call, prompt)
+    raw, *_ = await llm.complete(prompt, tier="quality")
     try:
         return json.loads(_clean_json(raw))
     except Exception:
@@ -232,7 +248,8 @@ INSTRUCTIONS:
 - Start directly with "Dear Hiring Manager," — no extra headers.
 - End with: Sincerely,\\n{profile['name']}"""
 
-    return await asyncio.to_thread(_call, prompt)
+    text, *_ = await llm.complete(prompt, tier="quality")
+    return text
 
 
 # ── Application email ─────────────────────────────────────────────────────────
@@ -281,3 +298,100 @@ Best regards,
 {profile['linkedin']}
 """
     return subject, body
+
+
+# ── Mock interview ───────────────────────────────────────────────────────────
+
+class InterviewParseError(Exception):
+    """The response wasn't well-formed interview questions or feedback."""
+
+
+async def interview_questions(profile: Dict, job: Dict) -> list[str]:
+    """One fast-tier call: 5 questions specific to this posting — a mix of
+    technical (from the job's stack) and behavioural, pitched at the
+    candidate's actual level. Raises InterviewParseError unless the response
+    is exactly 5 non-empty strings."""
+    prompt = f"""You are interviewing a candidate for this specific job posting. Write exactly 5
+interview questions tailored to it — a mix of technical questions (drawn from the job's stack and
+requirements) and behavioural questions, pitched at the candidate's actual level (not above or below it).
+
+CANDIDATE:
+{_candidate_summary(profile)}
+
+JOB:
+Title: {job.get('title', '')}
+Company: {job.get('company', '')}
+Description (excerpt):
+{(job.get('description') or '')[:DESC_CHARS]}
+
+Respond with ONLY a valid JSON array of exactly 5 question strings — no markdown:
+["...", "...", "...", "...", "..."]"""
+
+    raw, *_ = await llm.complete(prompt, tier="fast")
+    try:
+        data = json.loads(_clean_json(raw))
+    except ValueError as exc:
+        raise InterviewParseError(f"not JSON: {exc}")
+    if not isinstance(data, list) or len(data) != 5 or not all(isinstance(q, str) and q.strip() for q in data):
+        raise InterviewParseError(f"expected 5 question strings, got {data!r:.200}")
+    return [q.strip() for q in data]
+
+
+def _parse_interview_feedback(raw: str, n: int) -> list[Dict]:
+    try:
+        data = json.loads(_clean_json(raw))
+    except ValueError as exc:
+        raise InterviewParseError(f"not JSON: {exc}")
+    if not isinstance(data, list) or len(data) != n:
+        raise InterviewParseError(f"expected {n} feedback entries, got "
+                                   f"{len(data) if isinstance(data, list) else type(data).__name__}")
+    by_idx = {}
+    for d in data:
+        if not isinstance(d, dict):
+            raise InterviewParseError(f"not an object: {d!r:.80}")
+        try:
+            idx = int(d.get("question_index"))
+        except (TypeError, ValueError):
+            idx = None
+        if idx is None or not 0 <= idx < n or idx in by_idx:
+            raise InterviewParseError(f"unexpected or duplicate question_index {d.get('question_index')!r}")
+        verdict = str(d.get("verdict") or "").strip().lower()
+        if verdict not in ("strong", "improve"):
+            raise InterviewParseError(f"bad verdict {verdict!r}")
+        note = str(d.get("note") or "").strip()
+        if not note:
+            raise InterviewParseError("empty note")
+        by_idx[idx] = {"question_index": idx, "verdict": verdict, "note": note}
+    return [by_idx[i] for i in range(n)]
+
+
+async def interview_feedback(profile: Dict, job: Dict, qa: list[Dict]) -> list[Dict]:
+    """One fast-tier call covering ALL answers at once — cheaper, and lets the
+    model see the whole picture. `qa` is [{question, answer}, ...]. Returns
+    one {question_index, verdict, note} per item, matched by index like
+    parse_triage matches by job id. Raises InterviewParseError if any index
+    is missing or duplicated."""
+    qa_block = "".join(
+        f"--- Q{i} ---\nQuestion: {item['question']}\nAnswer: {item['answer']}\n"
+        for i, item in enumerate(qa)
+    )
+    prompt = f"""You are giving interview feedback to a candidate for this specific job. Assess each
+answer independently. Be concrete and honest — no praise padding.
+
+CANDIDATE:
+{_candidate_summary(profile)}
+
+JOB: {job.get('title', '')} at {job.get('company', '')}
+
+QUESTIONS AND ANSWERS:
+{qa_block}
+For each, return:
+- question_index: the number exactly as given above (Q0, Q1, ...)
+- verdict: "strong" or "improve"
+- note: ONE short, concrete sentence — what made it work, or what's missing.
+
+Respond with ONLY a valid JSON array, one object per question ({len(qa)} total) — no markdown:
+[{{"question_index": 0, "verdict": "strong", "note": ""}}]"""
+
+    raw, *_ = await llm.complete(prompt, tier="fast")
+    return _parse_interview_feedback(raw, len(qa))

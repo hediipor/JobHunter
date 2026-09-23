@@ -32,6 +32,14 @@ def demo():
     db.refresh(job)
     assert job.is_applied is False
     assert job.status == "new"  # reverted since nothing else had touched it
+    # un-marking removes the bare tracker row (nothing was generated for it)
+    assert db.query(Application).filter(Application.job_id == job.id).count() == 0
+
+    # ...but never one with a real CV on it
+    mark_applied(job.id, db)  # on again -> row is back
+    db.query(Application).filter(Application.job_id == job.id).one().cv_path = "cv.pdf"
+    db.commit()
+    mark_applied(job.id, db)  # off
     assert db.query(Application).filter(Application.job_id == job.id).count() == 1
 
     # if the pipeline has since moved on (interview), unmarking shouldn't reset that

@@ -1,27 +1,16 @@
 """
-Match scoring — rates a job posting against Hedi's profile (0-100).
+Match scoring — rates a job posting against a candidate profile (0-100).
 Returns (score, reasons_list).
 """
 import json
 import re
 from typing import Dict, List, Tuple
 
-# Skills extracted from profile.json — used for keyword matching
-SKILLS_FLAT = [
-    # Languages
-    "python", "javascript", "typescript", "dart", "php", "c++", "html", "css",
-    # Frameworks
-    "react", "angular", "flutter", "express", "bootstrap", "node", "node.js",
-    # Tools
-    "git", "github", "linux", "docker",
-    # Databases
-    "mongodb", "firebase", "mysql", "sql",
-    # Cloud / Certs
-    "aws", "rhcsa", "scrum", "agile", "rest", "restful", "api", "jwt",
-    # Concepts
-    "full stack", "fullstack", "web development", "mobile", "mean stack",
-    "frontend", "backend", "software engineer",
-]
+def profile_skills(profile: Dict | None) -> List[str]:
+    """Every skill in profile["skills"] (lists of strings), lowercased, deduped."""
+    lists = ((profile or {}).get("skills") or {}).values()
+    return list(dict.fromkeys(str(x).strip().lower() for l in lists if isinstance(l, list) for x in l if str(x).strip()))
+
 
 JUNIOR_KEYWORDS = [
     "junior", "entry", "graduate", "fresh", "intern", "stage",
@@ -50,7 +39,9 @@ def calculate_match(job: Dict, profile: Dict | None = None) -> Tuple[float, List
     score = 0.0
 
     # ── 1. Skills match (up to 50 pts) ──────────────────────────────────────
-    matched = [s for s in SKILLS_FLAT if re.search(rf"\b{re.escape(s)}\b", description)]
+    # lookarounds instead of \b so skills ending in a symbol ("c++") still match
+    matched = [s for s in profile_skills(profile)
+               if re.search(rf"(?<!\w){re.escape(s)}(?!\w)", description)]
     skill_score = min(50.0, len(matched) * 4.0)
     score += skill_score
     if matched:

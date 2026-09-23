@@ -2,6 +2,7 @@
 JobHunter AI — FastAPI backend entry point
 Run: uvicorn main:app --reload --port 8000
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -28,7 +29,7 @@ async def lifespan(app: FastAPI):
     # Startup
     create_tables()
     logger.info("✅ Database tables ready")
-    start_scheduler()
+    start_scheduler(asyncio.get_running_loop())
     yield
     # Shutdown
     stop_scheduler()
@@ -37,7 +38,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="JobHunter AI",
-    description="Personal job/internship finder and application assistant for Hedi Bou Maiza",
+    description="Personal job/internship finder and application assistant",
     version="1.0.0",
     lifespan=lifespan,
 )

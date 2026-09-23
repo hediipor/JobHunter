@@ -37,6 +37,13 @@ export default function JobsPage() {
     onError: () => toast.error("Couldn't update — is the backend running?"),
   });
 
+  const feedbackMutation = useMutation({
+    mutationFn: ({ jobId, feedback, reason }: { jobId: number; feedback: number; reason?: string }) =>
+      api.patch(`/jobs/${jobId}/feedback`, { feedback, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+    onError: () => toast.error("Couldn't save feedback"),
+  });
+
   const countries = Array.from(new Set(jobs.map(countryOf).filter(Boolean))).sort();
 
   const filtered = jobs.filter(j => {
@@ -109,7 +116,8 @@ export default function JobsPage() {
       ) : (
         <div className="grid-3">
           {filtered.map(j => (
-            <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)} />
+            <JobCard key={j.id} job={j} onApply={job => markAppliedMutation.mutate(job.id)}
+              onFeedback={(jobId, feedback, reason) => feedbackMutation.mutate({ jobId, feedback, reason })} />
           ))}
         </div>
       )}
