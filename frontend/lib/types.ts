@@ -20,6 +20,8 @@ export interface Job {
   dealbreakers?: string[];
   also_seen?: { source: string; url: string }[];  // same posting on other boards
   description?: string;
+  feedback?: number | null;   // 1 = good fit, -1 = not a fit, null = not rated
+  feedback_reason?: string;
 }
 
 export const SPONSORSHIP_META: Record<string, { label: string; color: string }> = {

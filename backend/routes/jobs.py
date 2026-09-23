@@ -60,6 +60,8 @@ class JobOut(BaseModel):
     sponsorship: str = ""
     dealbreakers: List[str] = []
     also_seen: List[dict] = []          # [{source, url}] — same posting on other boards
+    feedback: Optional[int] = None      # 1 = good fit, -1 = not a fit, None = not rated
+    feedback_reason: str = ""
 
     class Config:
         from_attributes = True
@@ -99,6 +101,8 @@ def _job_out(j: Job) -> dict:
         "sponsorship": j.sponsorship or "",
         "dealbreakers": _json_list(j.dealbreakers),
         "also_seen": [{"source": p[0], "url": p[1]} for p in _json_list(j.also_seen) if len(p) == 2],
+        "feedback": j.feedback,
+        "feedback_reason": j.feedback_reason or "",
         "description": j.description or "",
     }
 
@@ -155,6 +159,28 @@ def update_status(job_id: int, body: StatusUpdate, db: Session = Depends(get_db)
     j.status = body.status
     db.commit()
     return {"ok": True}
+
+
+# ── PATCH /jobs/{id}/feedback ─────────────────────────────────────────────────
+
+class FeedbackUpdate(BaseModel):
+    feedback: int          # 1 = good fit, -1 = not a fit, 0 = clear (back to NULL)
+    reason: Optional[str] = None   # short free text, mainly for 👎
+
+@router.patch("/{job_id:int}/feedback")
+def update_feedback(job_id: int, body: FeedbackUpdate, db: Session = Depends(get_db)):
+    if body.feedback not in (1, -1, 0):
+        raise HTTPException(400, "feedback must be 1, -1 or 0")
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j:
+        raise HTTPException(404, "Job not found")
+    if body.feedback == 0:
+        j.feedback, j.feedback_reason = None, None
+    else:
+        j.feedback = body.feedback
+        j.feedback_reason = ((body.reason or "").strip()[:200]) or None
+    db.commit()
+    return _job_out(j)
 
 
 # ── POST /jobs/{id}/mark-applied ──────────────────────────────────────────────

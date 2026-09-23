@@ -8,6 +8,7 @@ import re
 from typing import Dict, Tuple
 
 import llm
+import preferences
 
 logger = logging.getLogger("ai_generator")
 
@@ -70,12 +71,17 @@ def _job_block(job: Dict) -> str:
 
 
 def _triage_prompt(profile: Dict, jobs: list[Dict]) -> str:
+    note = preferences.get_note()
+    note_block = (
+        f"\nWHAT THIS CANDIDATE HAS SAID ABOUT SIMILAR JOBS (from their own 👍/👎):\n{note}\n"
+        if note else ""
+    )
     return f"""You are screening job postings for a specific candidate. Be strict and realistic.
 Assess each job independently.
 
 CANDIDATE:
 {_candidate_summary(profile)}
-
+{note_block}
 JOBS:
 {"".join(_job_block(j) for j in jobs)}
 For each job return:

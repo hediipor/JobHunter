@@ -63,6 +63,10 @@ class Job(Base):
     ai_model = Column(String)
     triage_version = Column(Integer)              # ai_generator.TRIAGE_VERSION at assessment; NULL = pre-versioning
 
+    # ── User feedback on the AI check (not the application pipeline — see `status`) ──
+    feedback = Column(Integer)                    # 1 = good fit, -1 = not a fit, NULL = not rated
+    feedback_reason = Column(String)              # short free text, optional — mainly for 👎
+
     @hybrid_property
     def fit_score(self):
         """THE score the user sees — in the jobs list, stats and digest alike.
@@ -129,6 +133,8 @@ def create_tables():
             ("ai_provider", "ai_provider VARCHAR"),
             ("ai_model", "ai_model VARCHAR"),
             ("triage_version", "triage_version INTEGER"),
+            ("feedback", "feedback INTEGER"),
+            ("feedback_reason", "feedback_reason VARCHAR"),
         ]:
             if col not in cols:
                 conn.exec_driver_sql(f"ALTER TABLE jobs ADD COLUMN {ddl}")

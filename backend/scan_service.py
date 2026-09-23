@@ -10,6 +10,7 @@ import logging
 from sqlalchemy import and_, or_
 
 import llm
+import preferences
 from ai_generator import TRIAGE_VERSION, TriageParseError, triage_batch, triage_batches
 from config import settings
 from database import Job, content_key
@@ -235,6 +236,10 @@ async def _run_scan(session_factory) -> list[int]:
             rows.append(row)
         db.commit()
         logger.info(f"✅ Scan done — {len(new_jobs)} new jobs added")
+
+        # Refresh the 👍/👎 preferences note before triaging — never breaks the
+        # scan (preferences.refresh swallows LLM failures and keeps the old note).
+        await preferences.refresh(db)
 
         # Every new job gets the AI check. The keyword score only decides the
         # order, so if the day's quota runs out it's the weakest that stay pending.

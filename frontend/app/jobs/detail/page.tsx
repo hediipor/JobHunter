@@ -7,6 +7,7 @@ import api, { API_BASE } from "@/lib/api";
 import { Job, SPONSORSHIP_META } from "@/lib/types";
 import { ArrowLeft, ExternalLink, FileText, Mail, Send, Loader2, MapPin, Building2, Zap, Sparkles, AlertTriangle } from "lucide-react";
 import toast from "react-hot-toast";
+import FeedbackButtons from "@/components/FeedbackButtons";
 
 function JobDetailContent() {
   const id = useSearchParams().get("id");
@@ -58,6 +59,13 @@ function JobDetailContent() {
       qc.invalidateQueries({ queryKey: ["applications"] });
     },
     onError: () => toast.error("Couldn't update — is the backend running?"),
+  });
+
+  const feedbackMutation = useMutation({
+    mutationFn: ({ feedback, reason }: { feedback: number; reason?: string }) =>
+      api.patch(`/jobs/${id}/feedback`, { feedback, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job", id] }),
+    onError: () => toast.error("Couldn't save feedback"),
   });
 
   if (!id) return <div className="empty"><h3>Job not found</h3></div>;
@@ -139,12 +147,16 @@ function JobDetailContent() {
               <h3 style={{ fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
                 <Sparkles size={16} color="var(--accent2)" /> AI Assessment
               </h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => triageMutation.mutate()}
-                disabled={triageMutation.isPending}>
-                {triageMutation.isPending
-                  ? <><Loader2 size={13} style={{ animation: "spin 0.7s linear infinite" }} /> Checking…</>
-                  : (job.ai_verdict ? "Re-check" : "Run check")}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <FeedbackButtons feedback={job.feedback}
+                  onRate={(fb, reason) => feedbackMutation.mutate({ feedback: fb, reason })} />
+                <button className="btn btn-ghost btn-sm" onClick={() => triageMutation.mutate()}
+                  disabled={triageMutation.isPending}>
+                  {triageMutation.isPending
+                    ? <><Loader2 size={13} style={{ animation: "spin 0.7s linear infinite" }} /> Checking…</>
+                    : (job.ai_verdict ? "Re-check" : "Run check")}
+                </button>
+              </div>
             </div>
             {job.ai_verdict ? (
               <>

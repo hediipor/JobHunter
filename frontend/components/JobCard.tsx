@@ -2,6 +2,7 @@
 import { Job, SOURCE_COLORS, SPONSORSHIP_META } from "@/lib/types";
 import Link from "next/link";
 import { MapPin, ExternalLink, Building2, AlertTriangle } from "lucide-react";
+import FeedbackButtons from "./FeedbackButtons";
 
 function PendingRing() {
   return (
@@ -39,9 +40,13 @@ function scoreBadgeClass(score: number) {
   return "badge badge-score-low";
 }
 
-interface Props { job: Job; onApply?: (job: Job) => void; }
+interface Props {
+  job: Job;
+  onApply?: (job: Job) => void;
+  onFeedback?: (jobId: number, feedback: number, reason?: string) => void;
+}
 
-export default function JobCard({ job, onApply }: Props) {
+export default function JobCard({ job, onApply, onFeedback }: Props) {
   const sourceColor = SOURCE_COLORS[job.source] || SOURCE_COLORS.default;
   const sponsor = job.sponsorship ? SPONSORSHIP_META[job.sponsorship] : undefined;
   const dealbreakers = job.dealbreakers ?? [];
@@ -110,8 +115,14 @@ export default function JobCard({ job, onApply }: Props) {
         </div>
       )}
 
-      {/* Actions */}
-      <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+      {/* Feedback + actions */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginTop: "auto" }}>
+        {onFeedback && (
+          <FeedbackButtons feedback={job.feedback}
+            onRate={(fb, reason) => onFeedback(job.id, fb, reason)} />
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
         <Link href={`/jobs/detail?id=${job.id}`} className="btn btn-ghost btn-sm" style={{ flex: 1, justifyContent: "center" }}>
           Details
         </Link>
