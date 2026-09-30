@@ -12,6 +12,10 @@ logger = logging.getLogger("sources.arbeitnow")
 ARBEITNOW_URL = "https://www.arbeitnow.com/api/job-board-api"
 
 
+# The feed's job_types is mostly seniority ("entry", "berufserfahren"); keep only real employment types
+EMPLOYMENT_TYPES = {"full-time", "part-time", "contract", "internship", "temporary", "freelance"}
+
+
 def _arbeitnow_to_dict(item: Dict) -> Dict:
     created = item.get("created_at")
     types = item.get("job_types") or []
@@ -24,7 +28,8 @@ def _arbeitnow_to_dict(item: Dict) -> Dict:
         "description": html_to_text(item.get("description") or ""),
         "url": item.get("url") or "",
         "source": "arbeitnow",
-        "job_type": str(types[0]).lower() if types else "",
+        "job_type": next((t for t in (str(t).lower().replace("_", "-") for t in types)
+                          if t in EMPLOYMENT_TYPES), ""),
         "date_posted": datetime.fromtimestamp(created, timezone.utc).strftime("%Y-%m-%d") if created else "",
         "salary": "",
     }

@@ -67,8 +67,10 @@ async def scrape_adzuna(client: httpx.AsyncClient, term: str, location: str, cou
         "what": f"{term} remote" if remote else term,
         "results_per_page": 50, "max_days_old": 14,
     }
-    if not remote:
-        params["where"] = location
+    # `where` wants a place inside the country; a country name matches nothing
+    where = ", ".join(p.strip() for p in location.split(",") if p.strip() and not _country_code(p))
+    if where and not remote:
+        params["where"] = where
     r = await client.get(ADZUNA_URL.format(country=country), params=params)
     if r.status_code in (401, 403):
         raise SourceError("check ADZUNA_APP_ID / ADZUNA_APP_KEY")

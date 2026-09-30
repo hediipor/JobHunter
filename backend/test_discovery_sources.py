@@ -55,6 +55,16 @@ def test_adzuna_skips_unknown_country_and_remote_uses_home(monkeypatch):
     assert whats == [("de", "Dev"), ("de", "Dev remote")]
 
 
+def test_adzuna_where_strips_country(monkeypatch):
+    wheres = []
+    def handler(req):
+        wheres.append(req.url.params.get("where"))
+        return httpx.Response(200, json={"results": []})
+    mock_http(monkeypatch, adzuna, handler)
+    asyncio.run(AdzunaSource().fetch(["Dev"], ["Barcelona, Spain", "Germany"], 10))
+    assert wheres == ["Barcelona", None]
+
+
 def test_adzuna_budget(monkeypatch):
     mock_http(monkeypatch, adzuna, lambda r: httpx.Response(200, json={"results": [adz_item(i) for i in range(50)]}))
     assert len(asyncio.run(AdzunaSource().fetch(["Dev"], ["Spain"], 7))) == 7
@@ -97,6 +107,12 @@ def test_arbeitnow_mapping_pages_and_ranking(monkeypatch):
     assert jobs[0]["description"] == "Hi there" and jobs[0]["job_type"] == "full-time"
     assert jobs[0]["date_posted"] == "2026-09-21" and jobs[0]["source"] == "arbeitnow"
     assert len(asyncio.run(ArbeitnowSource().fetch(["Software Engineer"], [], 2))) == 2
+
+
+def test_arbeitnow_job_type_ignores_seniority():
+    assert arbeitnow._arbeitnow_to_dict(arb_item("x", 1, job_types=["Full-time"]))["job_type"] == "full-time"
+    assert arbeitnow._arbeitnow_to_dict(arb_item("x", 1, job_types=["berufserfahren"]))["job_type"] == ""
+    assert arbeitnow._arbeitnow_to_dict(arb_item("x", 1, job_types=["mid", "full_time"]))["job_type"] == "full-time"
 
 
 def test_rank_by_terms():
