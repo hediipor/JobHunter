@@ -1,5 +1,5 @@
 "use client";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -20,12 +20,13 @@ function InterviewContent() {
   const [sentIndexes, setSentIndexes] = useState<number[]>([]);
   const [answerError, setAnswerError] = useState("");
 
-  const { data, isLoading } = useQuery<{ questions: string[] }>({
-    queryKey: ["interview", id],
-    queryFn: () => api.post(`/jobs/${id}/interview`),
-    enabled: !!id,
+  // Generating questions costs an LLM call, so it only runs on an explicit click.
+  const [questions, setQuestions] = useState<string[]>([]);
+  const startMutation = useMutation({
+    mutationFn: () => api.post(`/jobs/${id}/interview`),
+    onSuccess: (d: { questions: string[] }) => setQuestions(d.questions),
+    onError: (e: Error) => toast.error(e.message),
   });
-  const questions = data?.questions ?? [];
 
   const feedbackMutation = useMutation({
     mutationFn: (qa: { question: string; answer: string }[]) =>
@@ -69,7 +70,11 @@ function InterviewContent() {
         <p className="page-subtitle">5 questions tailored to this role — answer what you can, then get feedback.</p>
       </div>
 
-      {isLoading ? <div className="spinner" /> : (
+      {startMutation.isPending ? <div className="spinner" /> : !questions.length ? (
+        <button className="btn btn-primary" onClick={() => startMutation.mutate()}>
+          Start practice interview
+        </button>
+      ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {questions.map((q, i) => {
             const note = noteFor(i);
