@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple
 import httpx
 
 from config import settings
-from sources.base import Source, SourceError, advance, combos, html_to_text, take
+from sources.base import Source, SourceError, advance, combos, html_to_text, interleave, take
 from sources.jsearch import _country_code
 
 logger = logging.getLogger("sources.adzuna")
@@ -97,25 +97,21 @@ class AdzunaSource(Source):
             if code:
                 pairs.append((term, loc, code))
         plan = take(self.name, pairs, self.queries)
-        jobs: Dict[str, Dict] = {}
+        batches: List[List[Dict]] = []
         used = failed = 0
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 for term, loc, code in plan:
                     try:
-                        for job in await scrape_adzuna(client, term, loc, code):
-                            if job["url"]:
-                                jobs.setdefault(job["url"], job)
+                        batches.append([j for j in await scrape_adzuna(client, term, loc, code) if j["url"]])
                     except SourceError:
                         raise
                     except Exception as exc:
                         failed += 1
                         logger.warning(f"[adzuna] {term} / {loc} → {exc}")
                     used += 1
-                    if len(jobs) >= budget:
-                        break
         finally:
             advance(self.name, used)
         if plan and failed == used:
             raise SourceError("every Adzuna search failed")
-        return list(jobs.values())[:budget]
+        return interleave(batches)[:budget]

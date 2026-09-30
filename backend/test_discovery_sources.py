@@ -70,6 +70,19 @@ def test_adzuna_budget(monkeypatch):
     assert len(asyncio.run(AdzunaSource().fetch(["Dev"], ["Spain"], 7))) == 7
 
 
+def test_adzuna_budget_spread_across_queries(monkeypatch):
+    seen = []
+    def handler(req):
+        c = req.url.path.split("/")[4]
+        seen.append(c)
+        return httpx.Response(200, json={"results": [
+            {**adz_item(i), "redirect_url": f"https://adzuna/{c}/{i}"} for i in range(50)]})
+    mock_http(monkeypatch, adzuna, handler)
+    jobs = asyncio.run(AdzunaSource().fetch(["Dev"], ["Spain", "Germany"], 6))
+    assert sorted(seen) == ["de", "es"]
+    assert len(jobs) == 6 and {j["url"].split("/")[3] for j in jobs} == {"de", "es"}
+
+
 def test_adzuna_missing_key(monkeypatch):
     monkeypatch.setattr(adzuna.settings, "adzuna_app_key", "")
     with pytest.raises(SourceError):
