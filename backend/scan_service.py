@@ -43,8 +43,12 @@ def get_triage_state() -> dict:
 
 
 def _load_profile() -> dict:
-    with open(settings.profile_path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(settings.profile_path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # A fresh install has no profile yet; the dashboard shows this verbatim
+        raise RuntimeError("no profile yet — fill it in on the Profile page first") from None
 
 
 def _clean(s: str) -> str:
@@ -190,11 +194,11 @@ async def _run_scan(session_factory) -> list[int]:
     sources = enabled_sources(cfg)
     if not sources:
         raise RuntimeError("every job source is disabled in Settings")
+    profile = _load_profile()  # before the scrape: don't fetch jobs we'd only discard
     results = await fetch_all(sources, cfg["search_terms"], cfg["locations"], cfg["max_jobs_per_scan"])
     # "JSearch failed: 403 — …" for the dashboard, instead of just fewer jobs
     _scan_state["source_errors"] = {s.name: str(r) or type(r).__name__
                                     for s, r in results if isinstance(r, BaseException)}
-    profile = _load_profile()
     now = datetime.datetime.now(datetime.UTC)
     # Sync SQLAlchemy on the event loop — deliberate: local SQLite, sub-ms queries.
     db = session_factory()

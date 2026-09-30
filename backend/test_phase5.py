@@ -2,6 +2,8 @@
 CV bullets aren't repeated under every role."""
 import asyncio
 
+import pytest
+
 import scan_service
 from matcher import calculate_match
 
@@ -55,3 +57,16 @@ def test_cv_bullets_differ_per_role(tmp_path):
         pdf_builder.Paragraph = orig
     bullets = [t for t in seen if t.startswith("• ")]
     assert bullets == ["• tailored", "• second-own"]
+
+
+def test_scan_without_a_profile_says_so_and_skips_the_scrape(monkeypatch, tmp_path):
+    """A fresh install used to surface a raw FileNotFoundError on the dashboard,
+    after scraping jobs it then threw away."""
+    from types import SimpleNamespace
+    fetched = []
+    monkeypatch.setattr(scan_service, "settings", SimpleNamespace(profile_path=tmp_path / "nope.json"))
+    monkeypatch.setattr(scan_service, "enabled_sources", lambda cfg: [object()])
+    monkeypatch.setattr(scan_service, "fetch_all", lambda *a, **k: fetched.append(a) or [])
+    with pytest.raises(RuntimeError, match="no profile yet"):
+        asyncio.run(scan_service._run_scan(None))
+    assert fetched == []

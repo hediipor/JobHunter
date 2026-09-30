@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     adzuna_app_key: str = ""
 
     scan_interval_hours: int = 48
-    max_jobs_per_scan: int = 50
+    max_jobs_per_scan: int = 150
 
     # Daily digest email (sent after each scheduled scan)
     digest_enabled: bool = True
