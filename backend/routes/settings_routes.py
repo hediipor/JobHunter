@@ -39,6 +39,7 @@ def get_settings() -> Dict[str, Any]:
         "openrouter": bool(settings.openrouter_api_key),
         "gmail": bool(settings.gmail_app_password),
         "rapidapi": bool(settings.rapidapi_key),
+        "adzuna": bool(settings.adzuna_app_id and settings.adzuna_app_key),
     }
     cfg["gmail_from"] = settings.gmail_from
     cfg["llm_providers"] = llm.status()

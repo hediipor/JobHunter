@@ -7,8 +7,11 @@ job_type, date_posted, salary.
 """
 import json
 import logging
+import re
 from itertools import zip_longest
-from typing import Dict, List, Protocol, Sequence, Tuple, TypeVar
+from typing import Callable, Dict, List, Protocol, Sequence, Tuple, TypeVar
+
+from bs4 import BeautifulSoup
 
 from config import BASE_DIR
 
@@ -56,6 +59,23 @@ def interleave(batches: Sequence[Sequence[Dict]]) -> List[Dict]:
             if job is not None:
                 jobs.setdefault(job["url"], job)
     return list(jobs.values())
+
+
+def html_to_text(html: str) -> str:
+    return BeautifulSoup(html or "", "lxml").get_text(" ", strip=True)
+
+
+def _words(text: str) -> set:
+    return set(re.findall(r"[^\W\d_]{3,}", text.lower()))
+
+
+def rank_by_terms(items: Sequence[T], terms: Sequence[str], text_of: Callable[[T], str]) -> List[T]:
+    """Items sharing at least one word (3+ letters) with the search terms, best
+    first (most distinct term-words matched; ties keep feed order). Word-level,
+    not phrase: phrase matching dropped most real dev jobs."""
+    wanted = set().union(*(_words(t) for t in terms)) if terms else set()
+    scored = [(len(wanted & _words(text_of(i))), i) for i in items]
+    return [i for n, i in sorted((s for s in scored if s[0]), key=lambda s: -s[0])]
 
 
 def _load_cursors() -> Dict[str, int]:

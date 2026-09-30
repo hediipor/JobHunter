@@ -28,6 +28,7 @@ def get_status():
         "gemini_configured": bool(settings.gemini_api_key),
         "groq_configured": bool(settings.groq_api_key),
         "rapidapi_configured": bool(settings.rapidapi_key),
+        "adzuna_configured": bool(settings.adzuna_app_id and settings.adzuna_app_key),
         "gmail_configured": bool(settings.gmail_from and settings.gmail_app_password),
         "profile_configured": profile_configured,
         "setup_complete": profile_configured,
@@ -39,6 +40,8 @@ class KeysUpdate(BaseModel):
     groq_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     rapidapi_key: Optional[str] = None
+    adzuna_app_id: Optional[str] = None
+    adzuna_app_key: Optional[str] = None
     gmail_from: Optional[str] = None
     gmail_app_password: Optional[str] = None
 

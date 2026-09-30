@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Dict, List, Tuple
 
+from sources.adzuna import AdzunaSource
+from sources.arbeitnow import ArbeitnowSource
 from sources.base import Source
 from sources.jsearch import JSearchSource
 from sources.keejob import KeejobSource
@@ -15,6 +17,8 @@ logger = logging.getLogger("sources")
 REGISTRY: Dict[str, type] = {
     JSearchSource.name: JSearchSource,
     KeejobSource.name: KeejobSource,
+    AdzunaSource.name: AdzunaSource,
+    ArbeitnowSource.name: ArbeitnowSource,
 }
 
 

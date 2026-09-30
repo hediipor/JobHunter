@@ -39,6 +39,8 @@ export default function SetupPage() {
   const [groqKey, setGroqKey] = useState("");
   const [openrouterKey, setOpenrouterKey] = useState("");
   const [rapidapiKey, setRapidapiKey] = useState("");
+  const [adzunaId, setAdzunaId] = useState("");
+  const [adzunaKey, setAdzunaKey] = useState("");
   const [gmailFrom, setGmailFrom] = useState("");
   const [gmailPassword, setGmailPassword] = useState("");
 
@@ -95,6 +97,8 @@ export default function SetupPage() {
     if (groqKey.trim()) body.groq_api_key = groqKey.trim();
     if (openrouterKey.trim()) body.openrouter_api_key = openrouterKey.trim();
     if (rapidapiKey.trim()) body.rapidapi_key = rapidapiKey.trim();
+    if (adzunaId.trim()) body.adzuna_app_id = adzunaId.trim();
+    if (adzunaKey.trim()) body.adzuna_app_key = adzunaKey.trim();
     if (gmailFrom.trim()) body.gmail_from = gmailFrom.trim();
     if (gmailPassword.trim()) body.gmail_app_password = gmailPassword.trim();
     if (Object.keys(body).length === 0) {
@@ -222,6 +226,21 @@ export default function SetupPage() {
             onChange={e => setRapidapiKey(e.target.value)}
             placeholder="rapidapi key"
             hint="Pulls jobs from LinkedIn/Indeed/Glassdoor via JSearch (rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch, free tier 200 req/month). Skip this and you'll only get Tunisia listings from Keejob."
+          />
+
+          <Field
+            label="Adzuna app ID"
+            value={adzunaId}
+            onChange={e => setAdzunaId(e.target.value)}
+            placeholder="app id"
+          />
+          <Field
+            label="Adzuna app key"
+            type="password"
+            value={adzunaKey}
+            onChange={e => setAdzunaKey(e.target.value)}
+            placeholder="app key"
+            hint="Discovers jobs across the UK, Germany, France, Spain, Netherlands, Canada and more — no company list needed. Free at developer.adzuna.com. (Arbeitnow needs no key.)"
           />
 
           <Field

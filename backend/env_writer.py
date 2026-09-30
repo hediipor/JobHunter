@@ -19,12 +19,17 @@ GMAIL_FROM={GMAIL_FROM}
 # ── Optional: RapidAPI for JSearch (more job sources) ──────
 RAPIDAPI_KEY={RAPIDAPI_KEY}
 
+# ── Optional: Adzuna (job discovery across countries) ──────
+ADZUNA_APP_ID={ADZUNA_APP_ID}
+ADZUNA_APP_KEY={ADZUNA_APP_KEY}
+
 # ── App Settings ───────────────────────────────────────────
 SCAN_INTERVAL_HOURS=48
 MAX_JOBS_PER_SCAN=50
 """
 
-_DEFAULT_KEYS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "GMAIL_APP_PASSWORD", "GMAIL_FROM", "RAPIDAPI_KEY"]
+_DEFAULT_KEYS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "GMAIL_APP_PASSWORD", "GMAIL_FROM", "RAPIDAPI_KEY",
+                 "ADZUNA_APP_ID", "ADZUNA_APP_KEY"]
 
 
 def read_env(path) -> dict[str, str]:

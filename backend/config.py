@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     gmail_app_password: str = ""
     gmail_from: str = ""
     rapidapi_key: str = ""
+    adzuna_app_id: str = ""
+    adzuna_app_key: str = ""
 
     scan_interval_hours: int = 48
     max_jobs_per_scan: int = 50

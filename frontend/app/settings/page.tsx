@@ -11,6 +11,8 @@ interface SourceSettings { enabled: boolean; queries: number }
 const SOURCE_INFO: Record<string, { label: string; hint: string }> = {
   jsearch: { label: "JSearch (LinkedIn, Indeed, Glassdoor…)", hint: "RapidAPI requests per scan — free tier is 200/month." },
   keejob: { label: "Keejob (Tunisia)", hint: "Pages scraped per scan, using its own French search terms." },
+  adzuna: { label: "Adzuna (multi-country search)", hint: "Searches (term + location) per scan; needs the Adzuna app ID and key." },
+  arbeitnow: { label: "Arbeitnow (Germany/EU, no key)", hint: "Feed pages fetched per scan; results are filtered by your search terms." },
 };
 
 interface AppSettings {
@@ -19,7 +21,7 @@ interface AppSettings {
   search_terms: string[];
   locations: string[];
   sources: Record<string, SourceSettings>;
-  keys: { gemini: boolean; groq: boolean; openrouter: boolean; gmail: boolean; rapidapi: boolean };
+  keys: { gemini: boolean; groq: boolean; openrouter: boolean; gmail: boolean; rapidapi: boolean; adzuna: boolean };
   gmail_from: string;
 }
 
@@ -182,6 +184,7 @@ export default function SettingsPage() {
           <KeyStatus label="Groq API key" ok={!!cfg?.keys.groq} />
           <KeyStatus label="OpenRouter API key" ok={!!cfg?.keys.openrouter} />
           <KeyStatus label="RapidAPI key (JSearch)" ok={!!cfg?.keys.rapidapi} />
+          <KeyStatus label="Adzuna app ID + key" ok={!!cfg?.keys.adzuna} />
           <KeyStatus label={`Gmail app password (${cfg?.gmail_from || "not set"})`} ok={!!cfg?.keys.gmail} />
           <p style={{ fontSize: 12, color: "var(--text2)", marginTop: 10 }}>
             The per-job AI check (fit score, visa sponsorship, dealbreakers) runs on Groq first,
