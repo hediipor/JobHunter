@@ -1,0 +1,2 @@
+# Mac launcher must keep LF endings: CRLF breaks the shebang ("bad interpreter")
+*.command text eol=lf
